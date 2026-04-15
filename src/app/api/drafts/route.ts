@@ -11,56 +11,22 @@ const deepseek = createDeepSeek({
 });
 
 const MODEL_CONFIG = {
-  deepseek: { provider: deepseek, model: process.env.DEEPSEEK_MODEL || 'deepseek-chat' },
+  deepseek: { provider: deepseek, model: 'deepseek-chat' },
   minimax: {
     provider: createOpenAI({
       baseURL: process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1',
       apiKey: process.env.MINIMAX_API_KEY || '',
     }),
-    model: process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
+    model: 'MiniMax-M2.7',
   },
 } as const;
 
 type ModelType = keyof typeof MODEL_CONFIG;
 
-// Supabase 客户端
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://cuoadvkafpjyeasyribj.supabase.co',
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_Z3qks5beCk-7SwUTHZ_A9g_ohX4LeUE'
 );
-
-// 内存存储（Supabase 不可用时降级）
-const memoryStore = new Map<string, any>();
-
-// 带超时的 Supabase insert
-async function insertDraftWithTimeout(data: any, timeoutMs = 5000): Promise<{ id: string } | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const { data: result, error } = await supabase
-      .from('drafts')
-      .insert(data)
-      .select('id')
-      .single();
-
-    clearTimeout(timeout);
-
-    if (error || !result) {
-      console.error('Supabase insert error:', error?.message);
-      return null;
-    }
-    return { id: result.id };
-  } catch (e: any) {
-    clearTimeout(timeout);
-    if (e.name === 'AbortError') {
-      console.warn('Supabase insert timeout, falling back to memory');
-    } else {
-      console.error('Supabase insert error:', e.message);
-    }
-    return null;
-  }
-}
 
 const STORY_ANALYSIS_PROMPT = `你是一个专业的电影分镜师。分析以下故事，输出JSON。
 
@@ -130,25 +96,16 @@ function buildPromptText(shot: any, platform: string): string {
 }
 
 export async function GET() {
-  // 先从 Supabase 读取
   const { data, error } = await supabase
     .from('drafts')
     .select('id, title, story_text, status, created_at, updated_at')
     .order('created_at', { ascending: false })
     .limit(20);
 
-  if (!error && data) {
-    return NextResponse.json({ drafts: data });
+  if (error) {
+    return NextResponse.json({ error: '数据库读取失败：' + error.message }, { status: 500 });
   }
-
-  // 降级到内存
-  const drafts = Array.from(memoryStore.values()).map((d: any) => ({
-    id: d.id,
-    title: d.storySummary?.title || '未命名',
-    status: d.status,
-    created_at: d.createdAt,
-  }));
-  return NextResponse.json({ drafts });
+  return NextResponse.json({ drafts: data || [] });
 }
 
 export async function POST(request: NextRequest) {
@@ -162,7 +119,6 @@ export async function POST(request: NextRequest) {
       };
 
       let draftId = '';
-      let useMemory = false;
 
       try {
         const body = await request.json();
@@ -186,6 +142,25 @@ export async function POST(request: NextRequest) {
 
         draftId = generateDraftId();
         send({ type: 'start', draftId, status: 'analyzing' });
+
+        // 创建数据库记录
+        const { error: insertError } = await supabase.from('drafts').insert({
+          id: draftId,
+          title: title || null,
+          story_text: storyText,
+          language,
+          status: 'generating',
+          model_used: modelType,
+          story_summary: null,
+          scenes: [],
+          generation_meta: { model: config.model, version: '1.0' },
+        });
+
+        if (insertError) {
+          send({ error: '数据库写入失败：' + insertError.message });
+          controller.close();
+          return;
+        }
 
         // Step 1: 故事分析
         const analysisPrompt = STORY_ANALYSIS_PROMPT.replace('{storyText}', storyText.slice(0, 30000));
@@ -250,14 +225,6 @@ export async function POST(request: NextRequest) {
           } catch (e: any) {
             console.error(`Scene ${i + 1} expansion failed:`, e);
           }
-
-          // 尝试更新 Supabase（不阻塞主流程）
-          if (!useMemory && draftId) {
-            await supabase
-              .from('drafts')
-              .update({ scenes: scenes.slice(0, i + 1) })
-              .eq('id', draftId);
-          }
         }
 
         const storySummary = {
@@ -269,55 +236,38 @@ export async function POST(request: NextRequest) {
           characters: characters.map((c: any, i: number) => ({ id: `char_${i + 1}`, ...c })),
         };
 
+        // 更新数据库
+        const { error: updateError } = await supabase
+          .from('drafts')
+          .update({
+            title: storySummary.title,
+            story_summary: storySummary,
+            scenes,
+            status: 'ready',
+            generation_meta: { model: config.model, version: '1.0', lastGeneratedAt: new Date().toISOString(), warnings: [] },
+          })
+          .eq('id', draftId);
+
+        if (updateError) {
+          send({ error: '数据库更新失败：' + updateError.message });
+          controller.close();
+          return;
+        }
+
         const draft = {
           id: draftId,
           status: 'ready',
           source: { language, title, storyText },
           storySummary,
           scenes,
-          generationMeta: {
-            model: config.model,
-            version: '1.0',
-            lastGeneratedAt: new Date().toISOString(),
-            warnings: [],
-          },
+          generationMeta: { model: config.model, version: '1.0', lastGeneratedAt: new Date().toISOString(), warnings: [] },
         };
-
-        // 如果还没试过 Supabase，尝试插入
-        if (!useMemory) {
-          const insertResult = await insertDraftWithTimeout({
-            id: draftId,
-            title: storySummary.title,
-            story_text: storyText,
-            language,
-            status: 'ready',
-            model_used: modelType,
-            story_summary: storySummary,
-            scenes,
-            generation_meta: {
-              model: config.model,
-              version: '1.0',
-              lastGeneratedAt: new Date().toISOString(),
-              warnings: [],
-            },
-          });
-
-          if (!insertResult) {
-            // Supabase 不可用，降级到内存
-            useMemory = true;
-            console.log('Falling back to memory storage');
-          }
-        }
-
-        if (useMemory) {
-          memoryStore.set(draftId, { ...draft, createdAt: new Date().toISOString() });
-        }
 
         send({ type: 'done', draft });
 
       } catch (e: any) {
         console.error('Stream error:', e);
-        if (draftId && !useMemory) {
+        if (draftId) {
           await supabase.from('drafts').update({ status: 'failed' }).eq('id', draftId);
         }
         send({ error: e.message || '生成失败' });

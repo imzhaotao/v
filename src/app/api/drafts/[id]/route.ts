@@ -6,9 +6,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_Z3qks5beCk-7SwUTHZ_A9g_ohX4LeUE'
 );
 
-// 共享内存存储（降级用）
-const memoryStore = new Map<string, any>();
-
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
@@ -22,31 +19,30 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
     .eq('id', id)
     .single();
 
-  if (!error && data) {
-    const draft = {
-      id: data.id,
-      status: data.status,
-      source: { language: data.language || 'zh', title: data.title, storyText: data.story_text },
-      storySummary: data.story_summary || {
-        title: data.title || '未命名',
-        genre: '',
-        tone: '',
-        theme: '',
-        estimatedDurationSec: 0,
-        characters: [],
-      },
-      scenes: data.scenes || [],
-      generationMeta: data.generation_meta || { model: data.model_used || '', version: '1.0', lastGeneratedAt: data.updated_at, warnings: [] },
-    };
-    return NextResponse.json(draft);
+  if (error || !data) {
+    return NextResponse.json({ error: 'Draft 不存在' }, { status: 404 });
   }
 
-  // 降级到内存
-  if (memoryStore.has(id)) {
-    return NextResponse.json(memoryStore.get(id));
-  }
-
-  return NextResponse.json({ error: 'Draft 不存在' }, { status: 404 });
+  return NextResponse.json({
+    id: data.id,
+    status: data.status,
+    source: { language: data.language || 'zh', title: data.title, storyText: data.story_text },
+    storySummary: data.story_summary || {
+      title: data.title || '未命名',
+      genre: '',
+      tone: '',
+      theme: '',
+      estimatedDurationSec: 0,
+      characters: [],
+    },
+    scenes: data.scenes || [],
+    generationMeta: data.generation_meta || {
+      model: data.model_used || '',
+      version: '1.0',
+      lastGeneratedAt: data.updated_at,
+      warnings: [],
+    },
+  });
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
@@ -58,32 +54,23 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   if (body.scenes) updates.scenes = body.scenes;
   if (body.status) updates.status = body.status;
 
-  const { error } = await supabase
-    .from('drafts')
-    .update(updates)
-    .eq('id', id);
+  const { error } = await supabase.from('drafts').update(updates).eq('id', id);
 
-  if (!error) {
-    return NextResponse.json({ success: true });
+  if (error) {
+    return NextResponse.json({ error: '更新失败：' + error.message }, { status: 500 });
   }
 
-  // 降级到内存
-  if (memoryStore.has(id)) {
-    const draft = memoryStore.get(id);
-    if (body.storySummary) draft.storySummary = { ...draft.storySummary, ...body.storySummary };
-    if (body.scenes) draft.scenes = body.scenes;
-    if (body.status) draft.status = body.status;
-    memoryStore.set(id, draft);
-    return NextResponse.json({ success: true });
-  }
-
-  return NextResponse.json({ error: 'Draft 不存在' }, { status: 404 });
+  return NextResponse.json({ success: true });
 }
 
 export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   const { id } = await params;
 
-  await supabase.from('drafts').delete().eq('id', id);
-  memoryStore.delete(id);
+  const { error } = await supabase.from('drafts').delete().eq('id', id);
+
+  if (error) {
+    return NextResponse.json({ error: '删除失败：' + error.message }, { status: 500 });
+  }
+
   return NextResponse.json({ success: true });
 }
