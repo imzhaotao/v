@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
         const { storyText, language = 'zh', title, model = 'deepseek' } = body;
 
         if (!storyText || storyText.trim().length < 50) {
-          send({ error: '故事文本至少需要 50 个字符' });
+          send({ error: '故事文本至少需要 20 个字符' });
           controller.close();
           return;
         }

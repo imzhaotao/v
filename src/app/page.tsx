@@ -235,7 +235,7 @@ export default function Home() {
             <div className="mb-6">
               <div className="flex items-center justify-between mb-2">
                 <label className="text-sm font-medium text-gray-400">故事文本 *</label>
-                <span className={`text-xs ${storyText.length < 50 ? 'text-red-400' : 'text-gray-500'}`}>
+                <span className={`text-xs ${storyText.length < 20 ? 'text-red-400' : 'text-gray-500'}`}>
                   {storyText.length.toLocaleString()} / 100,000
                 </span>
               </div>
@@ -284,7 +284,7 @@ export default function Home() {
               </select>
               <button
                 onClick={handleGenerate}
-                disabled={loading || !storyText.trim() || storyText.length < 50}
+                disabled={loading || !storyText.trim() || storyText.length < 20}
                 className="px-8 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-xl font-semibold transition-all shadow-lg shadow-blue-500/25"
               >
                 {loading ? '生成中...' : '生成 Draft'}
