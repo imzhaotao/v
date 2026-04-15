@@ -1,15 +1,23 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import type { StoryDraft, Shot, Scene } from '@/types/draft';
+import { supabase } from '@/lib/supabase';
+import type { StoryDraft, StorySummary, Scene, Shot } from '@/types/draft';
 import { exportAsJson, exportAsMarkdown, exportAsCsv, downloadFile } from '@/lib/export';
-
-const STORAGE_KEY = 'story_to_video_draft';
 
 const AVAILABLE_MODELS = (process.env.NEXT_PUBLIC_AVAILABLE_MODELS || 'deepseek,minimax').split(',').map(m => m.trim());
 const MODEL_LABELS: Record<string, string> = { deepseek: 'DeepSeek V3', minimax: 'MiniMax M2.7' };
 
 type ProgressStep = 'idle' | 'analyzing' | 'expanding' | 'done' | 'error';
+
+interface DraftListItem {
+  id: string;
+  title: string | null;
+  story_text: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
 
 export default function Home() {
   const [storyText, setStoryText] = useState('');
@@ -23,29 +31,30 @@ export default function Home() {
   const [sceneIndex, setSceneIndex] = useState(0);
   const [totalScenes, setTotalScenes] = useState(0);
   const [expandedShots, setExpandedShots] = useState<Set<string>>(new Set());
-  const [savedDraft, setSavedDraft] = useState<StoryDraft | null>(null);
-  const [showRestoreModal, setShowRestoreModal] = useState(false);
-  const [restoreJson, setRestoreJson] = useState('');
-  const [draftList, setDraftList] = useState<Array<{id: string; title: string; status: string; created_at: string}>>([]);
+  const [draftList, setDraftList] = useState<DraftListItem[]>([]);
+  const [dbError, setDbError] = useState<string | null>(null);
 
-  // 页面加载时检查本地存储 + 加载列表
+  // 加载历史列表
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setSavedDraft(JSON.parse(saved));
-      } catch {}
-    }
-    // 加载历史列表
-    fetch('/api/drafts')
-      .then(r => r.json())
-      .then(data => {
-        if (data.drafts) setDraftList(data.drafts);
-      })
-      .catch(() => {});
+    loadDraftList();
   }, []);
 
-  const handleGenerate = async () => {
+  async function loadDraftList() {
+    setDbError(null);
+    const { data, error } = await supabase
+      .from('drafts')
+      .select('id, title, story_text, status, created_at, updated_at')
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (error) {
+      setDbError('数据库读取失败：' + error.message);
+      return;
+    }
+    setDraftList(data || []);
+  }
+
+  async function handleGenerate() {
     if (!storyText.trim()) return;
 
     setLoading(true);
@@ -57,7 +66,7 @@ export default function Home() {
     setTotalScenes(0);
 
     try {
-      const res = await fetch('/api/drafts', {
+      const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storyText, language: 'zh', title: title || undefined, model }),
@@ -73,6 +82,9 @@ export default function Home() {
 
       const decoder = new TextDecoder();
       let buffer = '';
+
+      // 保存到数据库
+      let savedId = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -92,50 +104,14 @@ export default function Home() {
             } else if (data.type === 'analysis') {
               setProgress('expanding');
               setProgressText('正在展开分镜...');
-              setTotalScenes(data.data.scenes?.length || 0);
-              // 创建预览 Draft
-              setDraft({
-                id: data.draftId || '',
-                status: 'generating',
-                source: { language: 'zh', title: title || data.data.title, storyText },
-                storySummary: {
-                  title: data.data.title || title || '未命名',
-                  genre: data.data.genre || '',
-                  tone: data.data.tone || '',
-                  theme: data.data.theme || '',
-                  estimatedDurationSec: data.data.estimatedDurationSec || 120,
-                  characters: (data.data.characters || []).map((c: any, i: number) => ({
-                    id: `char_${i + 1}`,
-                    name: c.name || '',
-                    description: c.description || '',
-                  })),
-                },
-                scenes: (data.data.scenes || []).map((s: any, i: number) => ({
-                  id: `scene_${i + 1}`,
-                  sequence: i + 1,
-                  location: s.location || '未知',
-                  timeOfDay: s.timeOfDay || 'unknown',
-                  summary: s.summary || '',
-                  shots: [],
-                })),
-                generationMeta: {
-                  model: model,
-                  version: '1.0',
-                  lastGeneratedAt: new Date().toISOString(),
-                  warnings: [],
-                },
-              });
+              setTotalScenes(data.data?.scenes?.length || 0);
             } else if (data.type === 'scene_progress') {
               setSceneIndex(data.sceneIndex + 1);
-              setTotalScenes(data.totalScenes);
-              setDraft((prev: any) => {
-                if (!prev) return prev;
-                return { ...prev };
-              });
+              setProgressText(`生成场景 ${data.sceneIndex + 1}/${data.totalScenes}...`);
             } else if (data.type === 'done') {
-              setDraft(data.draft);
               setProgress('done');
               setProgressText('生成完成');
+              setDraft(data.draft);
             } else if (data.error) {
               throw new Error(data.error);
             }
@@ -150,9 +126,9 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const handleClear = () => {
+  function handleClear() {
     setStoryText('');
     setTitle('');
     setDraft(null);
@@ -160,53 +136,18 @@ export default function Home() {
     setProgress('idle');
     setProgressText('');
     setExpandedShots(new Set());
-  };
+  }
 
-  const handleSave = () => {
-    if (!draft) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
-    setSavedDraft(draft);
-  };
-
-  const handleRestore = () => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return;
-    try {
-      const parsed = JSON.parse(saved) as StoryDraft;
-      setDraft(parsed);
-      setShowRestoreModal(false);
-    } catch (e) {
-      setError('恢复失败，数据格式错误');
-    }
-  };
-
-  const handleRestoreFromJson = () => {
-    if (!restoreJson.trim()) return;
-    try {
-      const parsed = JSON.parse(restoreJson) as StoryDraft;
-      setDraft(parsed);
-      setShowRestoreModal(false);
-      setRestoreJson('');
-    } catch (e) {
-      setError('JSON 格式错误');
-    }
-  };
-
-  const handleDeleteSaved = () => {
-    localStorage.removeItem(STORAGE_KEY);
-    setSavedDraft(null);
-  };
-
-  const toggleShot = (shotId: string) => {
+  function toggleShot(id: string) {
     const next = new Set(expandedShots);
-    if (next.has(shotId)) next.delete(shotId);
-    else next.add(shotId);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
     setExpandedShots(next);
-  };
+  }
 
-  const copyPrompt = (text: string) => {
+  function copyPrompt(text: string) {
     navigator.clipboard.writeText(text);
-  };
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 text-gray-100">
@@ -221,6 +162,13 @@ export default function Home() {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8">
+        {/* 数据库错误提示 */}
+        {dbError && (
+          <div className="mb-6 p-4 bg-red-900/20 border border-red-800/50 rounded-xl text-red-300 text-sm">
+            <span className="font-medium">数据库错误：</span>{dbError}
+          </div>
+        )}
+
         {/* 历史记录列表 */}
         {draftList.length > 0 && (
           <section className="mb-10">
@@ -230,15 +178,36 @@ export default function Home() {
                 <button
                   key={d.id}
                   onClick={async () => {
-                    try {
-                      const res = await fetch(`/api/drafts/${d.id}`);
-                      const data = await res.json();
-                      if (!data.error) {
-                        setDraft(data);
-                        setStoryText('');
-                        setTitle('');
-                      }
-                    } catch {}
+                    const { data, error } = await supabase
+                      .from('drafts')
+                      .select('*')
+                      .eq('id', d.id)
+                      .single();
+                    if (!error && data) {
+                      const draftData = {
+                        id: data.id,
+                        status: data.status,
+                        source: { language: data.language || 'zh', title: data.title, storyText: data.story_text },
+                        storySummary: data.story_summary || {
+                          title: data.title || '未命名',
+                          genre: '',
+                          tone: '',
+                          theme: '',
+                          estimatedDurationSec: 0,
+                          characters: [],
+                        },
+                        scenes: data.scenes || [],
+                        generationMeta: data.generation_meta || {
+                          model: data.model_used || '',
+                          version: '1.0',
+                          lastGeneratedAt: data.updated_at,
+                          warnings: [],
+                        },
+                      };
+                      setDraft(draftData);
+                      setStoryText('');
+                      setTitle('');
+                    }
                   }}
                   className="w-full text-left bg-gray-900/50 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/50 transition-colors"
                 >
@@ -249,7 +218,7 @@ export default function Home() {
                     </span>
                   </div>
                   <div className="text-xs text-gray-500 mt-1">
-                    {d.created_at ? new Date(d.created_at).toLocaleString('zh-CN') : ''}
+                    {new Date(d.created_at).toLocaleString('zh-CN')}
                   </div>
                 </button>
               ))}
@@ -306,13 +275,11 @@ export default function Home() {
                   <span className="text-blue-300 font-medium">{progressText}</span>
                 </div>
                 {totalScenes > 0 && (
-                  <div className="text-sm text-gray-400">
-                    场景进度：{sceneIndex} / {totalScenes}
-                  </div>
+                  <div className="text-sm text-gray-400">场景进度：{sceneIndex} / {totalScenes}</div>
                 )}
                 <div className="mt-2 w-full bg-gray-800 rounded-full h-1.5">
                   <div
-                    className="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
+                    className="bg-blue-500 h-1.5 rounded-full transition-all"
                     style={{ width: progress === 'expanding' && totalScenes > 0 ? `${(sceneIndex / totalScenes) * 100}%` : '30%' }}
                   />
                 </div>
@@ -356,21 +323,20 @@ export default function Home() {
             expandedShots={expandedShots}
             onToggleShot={toggleShot}
             onCopy={copyPrompt}
-            onSave={handleSave}
-            onShowRestore={() => { setRestoreJson(''); setShowRestoreModal(true); }}
-          />
-        )}
-
-        {/* 恢复弹窗 */}
-        {showRestoreModal && (
-          <RestoreModal
-            savedDraft={savedDraft}
-            onClose={() => setShowRestoreModal(false)}
-            onRestore={handleRestore}
-            onRestoreJson={handleRestoreFromJson}
-            onDelete={handleDeleteSaved}
-            restoreJson={restoreJson}
-            setRestoreJson={setRestoreJson}
+            onSave={async () => {
+              const { error } = await supabase.from('drafts').insert({
+                title: draft.storySummary.title,
+                story_text: draft.source.storyText,
+                language: draft.source.language,
+                status: 'ready',
+                model_used: model,
+                story_summary: draft.storySummary,
+                scenes: draft.scenes,
+                generation_meta: draft.generationMeta,
+              });
+              if (error) alert('保存失败：' + error.message);
+              else { alert('已保存到数据库'); loadDraftList(); }
+            }}
           />
         )}
       </main>
@@ -378,13 +344,12 @@ export default function Home() {
   );
 }
 
-function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave, onShowRestore }: {
+function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
   draft: StoryDraft;
   expandedShots: Set<string>;
   onToggleShot: (id: string) => void;
   onCopy: (text: string) => void;
   onSave: () => void;
-  onShowRestore: () => void;
 }) {
   const statusConfig: Record<string, { label: string; bg: string; text: string }> = {
     generating: { label: '生成中', bg: 'bg-blue-900', text: 'text-blue-300' },
@@ -399,46 +364,35 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave, onShowR
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
           <h2 className="text-xl font-semibold text-white">Draft 概览</h2>
-          <span className={`px-3 py-1 rounded-full text-xs font-medium ${statusConfig[draft.status]?.bg || 'bg-gray-800'} ${statusConfig[draft.status]?.text || 'text-gray-400'}`}>
+          <span className={`px-3 py-1 rounded-full text-xs font-medium ${statusConfig[draft.status]?.bg} ${statusConfig[draft.status]?.text}`}>
             {statusConfig[draft.status]?.label || draft.status}
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-500">
-            {draft.generationMeta.lastGeneratedAt && `生成时间：${new Date(draft.generationMeta.lastGeneratedAt).toLocaleString('zh-CN')}`}
-          </span>
-          <div className="flex items-center gap-2 border-l border-gray-700 pl-3">
-            <button
-              onClick={onSave}
-              className="px-3 py-1.5 text-xs bg-green-900/30 hover:bg-green-900/50 border border-green-800/50 text-green-400 rounded-lg transition-colors"
-            >
-              保存
-            </button>
-            <button
-              onClick={onShowRestore}
-              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
-            >
-              恢复
-            </button>
-            <button
-              onClick={() => downloadFile(exportAsJson(draft), `${draft.storySummary.title || 'draft'}.json`, 'application/json')}
-              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
-            >
-              JSON
-            </button>
-            <button
-              onClick={() => downloadFile(exportAsMarkdown(draft), `${draft.storySummary.title || 'draft'}.md`, 'text/markdown')}
-              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
-            >
-              Markdown
-            </button>
-            <button
-              onClick={() => downloadFile(exportAsCsv(draft), `${draft.storySummary.title || 'draft'}.csv`, 'text/csv')}
-              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
-            >
-              CSV
-            </button>
-          </div>
+        <div className="flex items-center gap-2 border-l border-gray-700 pl-3">
+          <button
+            onClick={onSave}
+            className="px-3 py-1.5 text-xs bg-green-900/30 hover:bg-green-900/50 border border-green-800/50 text-green-400 rounded-lg transition-colors"
+          >
+            保存到数据库
+          </button>
+          <button
+            onClick={() => downloadFile(exportAsJson(draft), `${draft.storySummary.title || 'draft'}.json`, 'application/json')}
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+          >
+            JSON
+          </button>
+          <button
+            onClick={() => downloadFile(exportAsMarkdown(draft), `${draft.storySummary.title || 'draft'}.md`, 'text/markdown')}
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+          >
+            Markdown
+          </button>
+          <button
+            onClick={() => downloadFile(exportAsCsv(draft), `${draft.storySummary.title || 'draft'}.csv`, 'text/csv')}
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+          >
+            CSV
+          </button>
         </div>
       </div>
 
@@ -500,7 +454,7 @@ function SceneCard({ scene, expandedShots, onToggleShot, onCopy }: {
     <div className="bg-gray-900/50 border border-gray-800 rounded-2xl overflow-hidden">
       <div className="px-6 py-5 border-b border-gray-800">
         <div className="flex items-center gap-4">
-          <div className="flex items-center justify-center w-10 h-10 bg-blue-600/20 border border-blue-600/30 rounded-xl">
+          <div className="w-10 h-10 bg-blue-600/20 border border-blue-600/30 rounded-xl flex items-center justify-center">
             <span className="text-blue-400 font-bold">{scene.sequence}</span>
           </div>
           <div>
@@ -509,13 +463,11 @@ function SceneCard({ scene, expandedShots, onToggleShot, onCopy }: {
               <span className="text-gray-500">·</span>
               <span className="text-gray-300">{scene.location}</span>
               <span className={`px-2 py-0.5 rounded text-xs ${scene.timeOfDay === 'day' ? 'bg-yellow-900/30 text-yellow-400' : scene.timeOfDay === 'night' ? 'bg-indigo-900/30 text-indigo-400' : scene.timeOfDay === 'dusk' ? 'bg-orange-900/30 text-orange-400' : 'bg-gray-800 text-gray-400'}`}>
-                {timeIcons[scene.timeOfDay] || '❓'} {scene.timeOfDay === 'day' ? '白天' : scene.timeOfDay === 'night' ? '夜晚' : scene.timeOfDay === 'dusk' ? '黄昏' : '未知'}
+                {timeIcons[scene.timeOfDay]} {scene.timeOfDay === 'day' ? '白天' : scene.timeOfDay === 'night' ? '夜晚' : scene.timeOfDay === 'dusk' ? '黄昏' : '未知'}
               </span>
             </div>
             <p className="text-sm text-gray-400 mt-1">{scene.summary}</p>
-            <div className="text-xs text-gray-500 mt-1">
-              {scene.shots.length} 个镜头 · 约{scene.shots.reduce((a, s) => a + (s.durationSec || 0), 0)}秒
-            </div>
+            <div className="text-xs text-gray-500 mt-1">{scene.shots.length} 个镜头 · 约{scene.shots.reduce((a, s) => a + (s.durationSec || 0), 0)}秒</div>
           </div>
         </div>
       </div>
@@ -530,11 +482,6 @@ function SceneCard({ scene, expandedShots, onToggleShot, onCopy }: {
             onCopy={onCopy}
           />
         ))}
-        {scene.shots.length === 0 && (
-          <div className="px-6 py-8 text-center text-gray-500 text-sm">
-            正在生成镜头...
-          </div>
-        )}
       </div>
     </div>
   );
@@ -554,7 +501,7 @@ function ShotCard({ shot, expanded, onToggle, onCopy }: {
     <div className="px-6 py-4 hover:bg-gray-800/30 transition-colors">
       <div className="flex items-center justify-between cursor-pointer" onClick={onToggle}>
         <div className="flex items-center gap-4">
-          <div className="flex items-center justify-center w-8 h-8 bg-gray-800 border border-gray-700 rounded-lg">
+          <div className="w-8 h-8 bg-gray-800 border border-gray-700 rounded-lg flex items-center justify-center">
             <span className="text-gray-400 text-sm font-medium">{shot.sequence}</span>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
@@ -604,64 +551,6 @@ function ShotCard({ shot, expanded, onToggle, onCopy }: {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// 恢复弹窗
-function RestoreModal({ savedDraft, onClose, onRestore, onRestoreJson, onDelete, restoreJson, setRestoreJson }: {
-  savedDraft: StoryDraft | null;
-  onClose: () => void;
-  onRestore: () => void;
-  onRestoreJson: () => void;
-  onDelete: () => void;
-  restoreJson: string;
-  setRestoreJson: (v: string) => void;
-}) {
-  return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto">
-        <div className="p-6 border-b border-gray-800 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-white">恢复 Draft</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">&times;</button>
-        </div>
-        <div className="p-6 space-y-4">
-          {savedDraft && (
-            <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
-              <div className="text-sm text-gray-300 mb-2">本地存储的 Draft</div>
-              <div className="text-white font-medium mb-1">{savedDraft.storySummary.title}</div>
-              <div className="text-xs text-gray-500 mb-3">{savedDraft.scenes.length} 场景 · {savedDraft.scenes.reduce((a, s) => a + s.shots.length, 0)} 镜头 · {savedDraft.generationMeta.lastGeneratedAt ? new Date(savedDraft.generationMeta.lastGeneratedAt).toLocaleString('zh-CN') : '无时间'}</div>
-              <div className="flex gap-2">
-                <button onClick={onRestore} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors">恢复此 Draft</button>
-                <button onClick={onDelete} className="px-4 py-2 bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 text-red-400 rounded-lg text-sm font-medium transition-colors">删除</button>
-              </div>
-            </div>
-          )}
-
-          {!savedDraft && (
-            <div className="text-sm text-gray-500 text-center py-4">本地存储为空</div>
-          )}
-
-          <div className="border-t border-gray-800 pt-4">
-            <div className="text-sm text-gray-300 mb-2">从 JSON 恢复</div>
-            <p className="text-xs text-gray-500 mb-2">导出 JSON 后，粘贴内容到下方即可恢复</p>
-            <textarea
-              value={restoreJson}
-              onChange={e => setRestoreJson(e.target.value)}
-              placeholder='粘贴 JSON 内容...'
-              rows={6}
-              className="w-full px-3 py-2 bg-gray-950 border border-gray-700 rounded-xl text-white placeholder-gray-600 font-mono text-xs focus:outline-none focus:border-blue-500 resize-y"
-            />
-            <button
-              onClick={onRestoreJson}
-              disabled={!restoreJson.trim()}
-              className="mt-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-sm font-medium transition-colors"
-            >
-              从 JSON 恢复
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
