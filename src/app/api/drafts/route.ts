@@ -1,20 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from 'ai';
-import { supabase } from '@/lib/supabase';
-import { minimax } from '@/lib/providers';
 import { createDeepSeek } from '@ai-sdk/deepseek';
+import { minimax } from '@/lib/providers';
+import { generateDraftId } from '@/lib/pipeline';
 
 const deepseek = createDeepSeek({
-  baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-  apiKey: process.env.DEEPSEEK_API_KEY || '',
+  baseURL: 'https://api.deepseek.com',
+  apiKey: 'sk-14dc552758e14c9387e6d2d0c3734bf2',
 });
 
 const MODEL_CONFIG = {
-  deepseek: { provider: deepseek, model: process.env.DEEPSEEK_MODEL || 'deepseek-chat' },
-  minimax: { provider: minimax, model: process.env.MINIMAX_MODEL || 'MiniMax-M2.7' },
+  deepseek: { provider: deepseek, model: 'deepseek-chat' },
+  minimax: { provider: minimax, model: 'MiniMax-M2.7' },
 } as const;
 
 type ModelType = keyof typeof MODEL_CONFIG;
+
+// 内存存储（临时）
+const memoryStore = new Map<string, any>();
 
 const STORY_ANALYSIS_PROMPT = `你是一个专业的电影分镜师。分析以下故事，输出JSON。
 
@@ -84,16 +87,15 @@ function buildPromptText(shot: any, platform: string): string {
   return `${prefix}, ${shotType || '中景'}, ${cameraAngle || '平视'}, ${cameraMovement || '固定'} shot, ${visualDescription || ''}, ${emotion || '平静'} mood`.trim();
 }
 
-// GET /api/drafts - 列表
+// GET /api/drafts
 export async function GET() {
-  const { data, error } = await supabase
-    .from('drafts')
-    .select('id, title, story_text, status, created_at, updated_at')
-    .order('created_at', { ascending: false })
-    .limit(20);
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ drafts: data || [] });
+  const drafts = Array.from(memoryStore.values()).map(d => ({
+    id: d.id,
+    title: d.storySummary?.title || '未命名',
+    status: d.status,
+    created_at: d.createdAt,
+  }));
+  return NextResponse.json({ drafts });
 }
 
 // POST /api/drafts - 流式创建
@@ -102,7 +104,9 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       const send = (data: object) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        } catch {}
       };
 
       let draftId = '';
@@ -127,29 +131,7 @@ export async function POST(request: NextRequest) {
         const config = MODEL_CONFIG[modelType as ModelType];
         const modelInstance = config.provider.chat(config.model);
 
-        // 创建 Draft 记录到 Supabase
-        const { data: newDraft, error: insertError } = await supabase
-          .from('drafts')
-          .insert({
-            title: title || null,
-            story_text: storyText,
-            language,
-            status: 'generating',
-            model_used: modelType,
-            story_summary: null,
-            scenes: [],
-            generation_meta: { version: '1.0', model: config.model },
-          })
-          .select()
-          .single();
-
-        if (insertError || !newDraft) {
-          send({ error: '创建 Draft 失败: ' + (insertError?.message || '未知错误') });
-          controller.close();
-          return;
-        }
-
-        draftId = newDraft.id;
+        draftId = generateDraftId();
         send({ type: 'start', draftId, status: 'analyzing' });
 
         // Step 1: 故事分析
@@ -215,15 +197,9 @@ export async function POST(request: NextRequest) {
           } catch (e: any) {
             console.error(`Scene ${i + 1} expansion failed:`, e);
           }
-
-          // 每完成一个场景就更新数据库
-          await supabase
-            .from('drafts')
-            .update({ scenes: scenes.slice(0, i + 1) })
-            .eq('id', draftId);
         }
 
-        // 完成：更新完整记录
+        // 完成
         const storySummary = {
           title: analysis.title || title || '未命名',
           genre: analysis.genre,
@@ -232,22 +208,6 @@ export async function POST(request: NextRequest) {
           estimatedDurationSec: analysis.estimatedDurationSec || 120,
           characters: characters.map((c: any, i: number) => ({ id: `char_${i + 1}`, ...c })),
         };
-
-        await supabase
-          .from('drafts')
-          .update({
-            title: storySummary.title,
-            story_summary: storySummary,
-            scenes,
-            status: 'ready',
-            generation_meta: {
-              model: config.model,
-              version: '1.0',
-              lastGeneratedAt: new Date().toISOString(),
-              warnings: [],
-            },
-          })
-          .eq('id', draftId);
 
         const draft = {
           id: draftId,
@@ -263,13 +223,13 @@ export async function POST(request: NextRequest) {
           },
         };
 
+        // 存内存
+        memoryStore.set(draftId, { ...draft, createdAt: new Date().toISOString() });
+
         send({ type: 'done', draft });
 
       } catch (e: any) {
         console.error('Stream error:', e);
-        if (draftId) {
-          await supabase.from('drafts').update({ status: 'failed' }).eq('id', draftId);
-        }
         send({ error: e.message || '生成失败' });
       } finally {
         controller.close();
