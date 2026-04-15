@@ -249,7 +249,6 @@ export default function Home() {
               {storyText.length > 0 && storyText.length < 20 && (
                 <p className="text-xs text-orange-400 mt-2">故事文本至少需要 20 个字符才能生成（还需 {20 - storyText.length} 字）</p>
               )}
-              />
             </div>
 
             {/* 进度指示 */}
