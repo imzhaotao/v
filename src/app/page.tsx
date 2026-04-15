@@ -26,8 +26,9 @@ export default function Home() {
   const [savedDraft, setSavedDraft] = useState<StoryDraft | null>(null);
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [restoreJson, setRestoreJson] = useState('');
+  const [draftList, setDraftList] = useState<Array<{id: string; title: string; status: string; created_at: string}>>([]);
 
-  // 页面加载时检查本地存储
+  // 页面加载时检查本地存储 + 加载列表
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
@@ -35,6 +36,13 @@ export default function Home() {
         setSavedDraft(JSON.parse(saved));
       } catch {}
     }
+    // 加载历史列表
+    fetch('/api/drafts')
+      .then(r => r.json())
+      .then(data => {
+        if (data.drafts) setDraftList(data.drafts);
+      })
+      .catch(() => {});
   }, []);
 
   const handleGenerate = async () => {
@@ -213,6 +221,42 @@ export default function Home() {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8">
+        {/* 历史记录列表 */}
+        {draftList.length > 0 && (
+          <section className="mb-10">
+            <h2 className="text-lg font-semibold text-white mb-4">历史记录</h2>
+            <div className="space-y-2">
+              {draftList.map(d => (
+                <button
+                  key={d.id}
+                  onClick={async () => {
+                    try {
+                      const res = await fetch(`/api/drafts/${d.id}`);
+                      const data = await res.json();
+                      if (!data.error) {
+                        setDraft(data);
+                        setStoryText('');
+                        setTitle('');
+                      }
+                    } catch {}
+                  }}
+                  className="w-full text-left bg-gray-900/50 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/50 transition-colors"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium text-white truncate">{d.title || '未命名'}</div>
+                    <span className={`px-2 py-0.5 rounded text-xs ${d.status === 'ready' ? 'bg-green-900/30 text-green-400' : d.status === 'failed' ? 'bg-red-900/30 text-red-400' : 'bg-blue-900/30 text-blue-400'}`}>
+                      {d.status === 'ready' ? '就绪' : d.status === 'failed' ? '失败' : '生成中'}
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {d.created_at ? new Date(d.created_at).toLocaleString('zh-CN') : ''}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* 输入区 */}
         <section className="mb-10">
           <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6">
