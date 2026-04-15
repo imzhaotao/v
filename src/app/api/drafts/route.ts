@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from 'ai';
+import { supabase } from '@/lib/supabase';
 import { minimax } from '@/lib/providers';
-import { generateDraftId } from '@/lib/pipeline';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 
 const deepseek = createDeepSeek({
@@ -10,19 +10,12 @@ const deepseek = createDeepSeek({
 });
 
 const MODEL_CONFIG = {
-  deepseek: {
-    provider: deepseek,
-    model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-  },
-  minimax: {
-    provider: minimax,
-    model: process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
-  },
+  deepseek: { provider: deepseek, model: process.env.DEEPSEEK_MODEL || 'deepseek-chat' },
+  minimax: { provider: minimax, model: process.env.MINIMAX_MODEL || 'MiniMax-M2.7' },
 } as const;
 
 type ModelType = keyof typeof MODEL_CONFIG;
 
-// 简化版 Story Analysis - 返回关键信息
 const STORY_ANALYSIS_PROMPT = `你是一个专业的电影分镜师。分析以下故事，输出JSON。
 
 要求：
@@ -47,7 +40,7 @@ const STORY_ANALYSIS_PROMPT = `你是一个专业的电影分镜师。分析以�
 
 JSON：`;
 
-// 简化版 Shot Expansion - 单个场景
+// 简化版 Shot Expansion
 const SHOT_EXPANSION_PROMPT = `根据以下场景信息，生成3-5个分镜。
 
 场景：{location} / {timeOfDay}
@@ -68,8 +61,8 @@ const SHOT_EXPANSION_PROMPT = `根据以下场景信息，生成3-5个分镜。
 
 只输出JSON数组，不要其他文字：`;
 
-function buildPrompt(scene: any, characters: any[]): string {
-  const charStr = characters.map(c => c.name).join('、') || '主角';
+function buildScenePrompt(scene: any, characters: any[]): string {
+  const charStr = characters.map((c: any) => c.name).join('、') || '主角';
   return SHOT_EXPANSION_PROMPT
     .replace('{location}', scene.location)
     .replace('{timeOfDay}', scene.timeOfDay)
@@ -85,9 +78,22 @@ function parseJson<T>(text: string, fallback: T): T {
   return fallback;
 }
 
+function buildPromptText(shot: any, platform: string): string {
+  const { shotType, cameraAngle, cameraMovement, visualDescription, emotion } = shot;
+  const prefix = platform === 'kling' ? 'Cinematic video' : platform === 'runway' ? 'Film still' : 'Cinematic scene';
+  return `${prefix}, ${shotType || '中景'}, ${cameraAngle || '平视'}, ${cameraMovement || '固定'} shot, ${visualDescription || ''}, ${emotion || '平静'} mood`.trim();
+}
+
 // GET /api/drafts - 列表
 export async function GET() {
-  return NextResponse.json({ drafts: [] });
+  const { data, error } = await supabase
+    .from('drafts')
+    .select('id, title, story_text, status, created_at, updated_at')
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ drafts: data || [] });
 }
 
 // POST /api/drafts - 流式创建
@@ -98,6 +104,8 @@ export async function POST(request: NextRequest) {
       const send = (data: object) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
+
+      let draftId = '';
 
       try {
         const body = await request.json();
@@ -119,7 +127,29 @@ export async function POST(request: NextRequest) {
         const config = MODEL_CONFIG[modelType as ModelType];
         const modelInstance = config.provider.chat(config.model);
 
-        const draftId = generateDraftId();
+        // 创建 Draft 记录到 Supabase
+        const { data: newDraft, error: insertError } = await supabase
+          .from('drafts')
+          .insert({
+            title: title || null,
+            story_text: storyText,
+            language,
+            status: 'generating',
+            model_used: modelType,
+            story_summary: null,
+            scenes: [],
+            generation_meta: { version: '1.0', model: config.model },
+          })
+          .select()
+          .single();
+
+        if (insertError || !newDraft) {
+          send({ error: '创建 Draft 失败: ' + (insertError?.message || '未知错误') });
+          controller.close();
+          return;
+        }
+
+        draftId = newDraft.id;
         send({ type: 'start', draftId, status: 'analyzing' });
 
         // Step 1: 故事分析
@@ -143,22 +173,23 @@ export async function POST(request: NextRequest) {
 
         send({ type: 'analysis', data: analysis, status: 'expanding' });
 
-        // Step 2: 分镜扩展（每个场景）
+        // Step 2: 分镜扩展
         const characters = analysis.characters || [];
-        const scenes: Array<{ id: string; sequence: number; location: string; timeOfDay: string; summary: string; shots: any[] }> = (analysis.scenes || []).map((s: any, i: number) => ({
-          id: `scene_${i + 1}`,
-          sequence: i + 1,
-          location: s.location,
-          timeOfDay: s.timeOfDay || 'unknown',
-          summary: s.summary,
-          shots: [],
-        }));
+        const scenes: Array<{ id: string; sequence: number; location: string; timeOfDay: string; summary: string; shots: any[] }> =
+          (analysis.scenes || []).map((s: any, i: number) => ({
+            id: `scene_${i + 1}`,
+            sequence: i + 1,
+            location: s.location,
+            timeOfDay: s.timeOfDay || 'unknown',
+            summary: s.summary,
+            shots: [],
+          }));
 
         for (let i = 0; i < scenes.length; i++) {
           const scene = scenes[i];
           send({ type: 'scene_progress', sceneIndex: i, totalScenes: scenes.length, status: 'expanding' });
 
-          const scenePrompt = buildPrompt(scene, characters);
+          const scenePrompt = buildScenePrompt(scene, characters);
           try {
             const { text: shotsText } = await generateText({
               model: modelInstance,
@@ -184,21 +215,45 @@ export async function POST(request: NextRequest) {
           } catch (e: any) {
             console.error(`Scene ${i + 1} expansion failed:`, e);
           }
+
+          // 每完成一个场景就更新数据库
+          await supabase
+            .from('drafts')
+            .update({ scenes: scenes.slice(0, i + 1) })
+            .eq('id', draftId);
         }
 
-        // 完成
+        // 完成：更新完整记录
+        const storySummary = {
+          title: analysis.title || title || '未命名',
+          genre: analysis.genre,
+          tone: analysis.tone,
+          theme: analysis.theme,
+          estimatedDurationSec: analysis.estimatedDurationSec || 120,
+          characters: characters.map((c: any, i: number) => ({ id: `char_${i + 1}`, ...c })),
+        };
+
+        await supabase
+          .from('drafts')
+          .update({
+            title: storySummary.title,
+            story_summary: storySummary,
+            scenes,
+            status: 'ready',
+            generation_meta: {
+              model: config.model,
+              version: '1.0',
+              lastGeneratedAt: new Date().toISOString(),
+              warnings: [],
+            },
+          })
+          .eq('id', draftId);
+
         const draft = {
           id: draftId,
           status: 'ready',
           source: { language, title, storyText },
-          storySummary: {
-            title: analysis.title || title || '未命名',
-            genre: analysis.genre,
-            tone: analysis.tone,
-            theme: analysis.theme,
-            estimatedDurationSec: analysis.estimatedDurationSec || 120,
-            characters: characters.map((c: any, i: number) => ({ id: `char_${i + 1}`, ...c })),
-          },
+          storySummary,
           scenes,
           generationMeta: {
             model: config.model,
@@ -212,6 +267,9 @@ export async function POST(request: NextRequest) {
 
       } catch (e: any) {
         console.error('Stream error:', e);
+        if (draftId) {
+          await supabase.from('drafts').update({ status: 'failed' }).eq('id', draftId);
+        }
         send({ error: e.message || '生成失败' });
       } finally {
         controller.close();
@@ -226,10 +284,4 @@ export async function POST(request: NextRequest) {
       'Connection': 'keep-alive',
     },
   });
-}
-
-function buildPromptText(shot: any, platform: string): string {
-  const { shotType, cameraAngle, cameraMovement, visualDescription, emotion } = shot;
-  const prefix = platform === 'kling' ? 'Cinematic video' : platform === 'runway' ? 'Film still' : 'Cinematic scene';
-  return `${prefix}, ${shotType || '中景'}, ${cameraAngle || '平视'}, ${cameraMovement || '固定'} shot, ${visualDescription || ''}, ${emotion || '平静'} mood`.trim();
 }

@@ -11,6 +11,7 @@
   "dependencies": {
     "@ai-sdk/deepseek": "^2.0.29",
     "@ai-sdk/openai": "^3.0.53",
+    "@supabase/supabase-js": "^2.103.2",
     "ai": "^6.0.161",
     "next": "16.2.3",
     "react": "19.2.4",

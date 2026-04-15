@@ -1,7 +1,10 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import type { StoryDraft, Shot, Scene } from '@/types/draft';
+import { exportAsJson, exportAsMarkdown, exportAsCsv, downloadFile } from '@/lib/export';
+
+const STORAGE_KEY = 'story_to_video_draft';
 
 const AVAILABLE_MODELS = (process.env.NEXT_PUBLIC_AVAILABLE_MODELS || 'deepseek,minimax').split(',').map(m => m.trim());
 const MODEL_LABELS: Record<string, string> = { deepseek: 'DeepSeek V3', minimax: 'MiniMax M2.7' };
@@ -20,6 +23,19 @@ export default function Home() {
   const [sceneIndex, setSceneIndex] = useState(0);
   const [totalScenes, setTotalScenes] = useState(0);
   const [expandedShots, setExpandedShots] = useState<Set<string>>(new Set());
+  const [savedDraft, setSavedDraft] = useState<StoryDraft | null>(null);
+  const [showRestoreModal, setShowRestoreModal] = useState(false);
+  const [restoreJson, setRestoreJson] = useState('');
+
+  // 页面加载时检查本地存储
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        setSavedDraft(JSON.parse(saved));
+      } catch {}
+    }
+  }, []);
 
   const handleGenerate = async () => {
     if (!storyText.trim()) return;
@@ -136,6 +152,41 @@ export default function Home() {
     setProgress('idle');
     setProgressText('');
     setExpandedShots(new Set());
+  };
+
+  const handleSave = () => {
+    if (!draft) return;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
+    setSavedDraft(draft);
+  };
+
+  const handleRestore = () => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
+    try {
+      const parsed = JSON.parse(saved) as StoryDraft;
+      setDraft(parsed);
+      setShowRestoreModal(false);
+    } catch (e) {
+      setError('恢复失败，数据格式错误');
+    }
+  };
+
+  const handleRestoreFromJson = () => {
+    if (!restoreJson.trim()) return;
+    try {
+      const parsed = JSON.parse(restoreJson) as StoryDraft;
+      setDraft(parsed);
+      setShowRestoreModal(false);
+      setRestoreJson('');
+    } catch (e) {
+      setError('JSON 格式错误');
+    }
+  };
+
+  const handleDeleteSaved = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    setSavedDraft(null);
   };
 
   const toggleShot = (shotId: string) => {
@@ -258,6 +309,21 @@ export default function Home() {
             expandedShots={expandedShots}
             onToggleShot={toggleShot}
             onCopy={copyPrompt}
+            onSave={handleSave}
+            onShowRestore={() => { setRestoreJson(''); setShowRestoreModal(true); }}
+          />
+        )}
+
+        {/* 恢复弹窗 */}
+        {showRestoreModal && (
+          <RestoreModal
+            savedDraft={savedDraft}
+            onClose={() => setShowRestoreModal(false)}
+            onRestore={handleRestore}
+            onRestoreJson={handleRestoreFromJson}
+            onDelete={handleDeleteSaved}
+            restoreJson={restoreJson}
+            setRestoreJson={setRestoreJson}
           />
         )}
       </main>
@@ -265,11 +331,13 @@ export default function Home() {
   );
 }
 
-function DraftView({ draft, expandedShots, onToggleShot, onCopy }: {
+function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave, onShowRestore }: {
   draft: StoryDraft;
   expandedShots: Set<string>;
   onToggleShot: (id: string) => void;
   onCopy: (text: string) => void;
+  onSave: () => void;
+  onShowRestore: () => void;
 }) {
   const statusConfig: Record<string, { label: string; bg: string; text: string }> = {
     generating: { label: '生成中', bg: 'bg-blue-900', text: 'text-blue-300' },
@@ -288,8 +356,42 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy }: {
             {statusConfig[draft.status]?.label || draft.status}
           </span>
         </div>
-        <div className="text-xs text-gray-500">
-          {draft.generationMeta.lastGeneratedAt && `生成时间：${new Date(draft.generationMeta.lastGeneratedAt).toLocaleString('zh-CN')}`}
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">
+            {draft.generationMeta.lastGeneratedAt && `生成时间：${new Date(draft.generationMeta.lastGeneratedAt).toLocaleString('zh-CN')}`}
+          </span>
+          <div className="flex items-center gap-2 border-l border-gray-700 pl-3">
+            <button
+              onClick={onSave}
+              className="px-3 py-1.5 text-xs bg-green-900/30 hover:bg-green-900/50 border border-green-800/50 text-green-400 rounded-lg transition-colors"
+            >
+              保存
+            </button>
+            <button
+              onClick={onShowRestore}
+              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+            >
+              恢复
+            </button>
+            <button
+              onClick={() => downloadFile(exportAsJson(draft), `${draft.storySummary.title || 'draft'}.json`, 'application/json')}
+              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+            >
+              JSON
+            </button>
+            <button
+              onClick={() => downloadFile(exportAsMarkdown(draft), `${draft.storySummary.title || 'draft'}.md`, 'text/markdown')}
+              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+            >
+              Markdown
+            </button>
+            <button
+              onClick={() => downloadFile(exportAsCsv(draft), `${draft.storySummary.title || 'draft'}.csv`, 'text/csv')}
+              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+            >
+              CSV
+            </button>
+          </div>
         </div>
       </div>
 
@@ -455,6 +557,64 @@ function ShotCard({ shot, expanded, onToggle, onCopy }: {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// 恢复弹窗
+function RestoreModal({ savedDraft, onClose, onRestore, onRestoreJson, onDelete, restoreJson, setRestoreJson }: {
+  savedDraft: StoryDraft | null;
+  onClose: () => void;
+  onRestore: () => void;
+  onRestoreJson: () => void;
+  onDelete: () => void;
+  restoreJson: string;
+  setRestoreJson: (v: string) => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto">
+        <div className="p-6 border-b border-gray-800 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-white">恢复 Draft</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">&times;</button>
+        </div>
+        <div className="p-6 space-y-4">
+          {savedDraft && (
+            <div className="bg-gray-800/50 rounded-xl p-4 border border-gray-700">
+              <div className="text-sm text-gray-300 mb-2">本地存储的 Draft</div>
+              <div className="text-white font-medium mb-1">{savedDraft.storySummary.title}</div>
+              <div className="text-xs text-gray-500 mb-3">{savedDraft.scenes.length} 场景 · {savedDraft.scenes.reduce((a, s) => a + s.shots.length, 0)} 镜头 · {savedDraft.generationMeta.lastGeneratedAt ? new Date(savedDraft.generationMeta.lastGeneratedAt).toLocaleString('zh-CN') : '无时间'}</div>
+              <div className="flex gap-2">
+                <button onClick={onRestore} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors">恢复此 Draft</button>
+                <button onClick={onDelete} className="px-4 py-2 bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 text-red-400 rounded-lg text-sm font-medium transition-colors">删除</button>
+              </div>
+            </div>
+          )}
+
+          {!savedDraft && (
+            <div className="text-sm text-gray-500 text-center py-4">本地存储为空</div>
+          )}
+
+          <div className="border-t border-gray-800 pt-4">
+            <div className="text-sm text-gray-300 mb-2">从 JSON 恢复</div>
+            <p className="text-xs text-gray-500 mb-2">导出 JSON 后，粘贴内容到下方即可恢复</p>
+            <textarea
+              value={restoreJson}
+              onChange={e => setRestoreJson(e.target.value)}
+              placeholder='粘贴 JSON 内容...'
+              rows={6}
+              className="w-full px-3 py-2 bg-gray-950 border border-gray-700 rounded-xl text-white placeholder-gray-600 font-mono text-xs focus:outline-none focus:border-blue-500 resize-y"
+            />
+            <button
+              onClick={onRestoreJson}
+              disabled={!restoreJson.trim()}
+              className="mt-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-sm font-medium transition-colors"
+            >
+              从 JSON 恢复
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
