@@ -242,9 +242,13 @@ export default function Home() {
               <textarea
                 value={storyText}
                 onChange={e => setStoryText(e.target.value)}
-                placeholder="粘贴你的短篇故事...\n支持中英文，最多10万字符。大故事会自动分步处理。"
+                placeholder="粘贴你的短篇故事...（至少 20 字）"
                 rows={10}
                 className="w-full px-4 py-3 bg-gray-950/50 border border-gray-700 rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 resize-y font-mono text-sm leading-relaxed"
+              />
+              {storyText.length > 0 && storyText.length < 20 && (
+                <p className="text-xs text-orange-400 mt-2">故事文本至少需要 20 个字符才能生成（还需 {20 - storyText.length} 字）</p>
+              )}
               />
             </div>
 
