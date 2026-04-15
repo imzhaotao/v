@@ -1,81 +1,235 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { runGenerationPipeline, generateDraftId, getDraft } from '@/lib/pipeline';
+import { generateText } from 'ai';
+import { minimax } from '@/lib/providers';
+import { generateDraftId } from '@/lib/pipeline';
+import { createDeepSeek } from '@ai-sdk/deepseek';
 
-const LLM_ENDPOINT = process.env.LLM_ENDPOINT || 'https://api.openai.com/v1/chat/completions';
-const LLM_API_KEY = process.env.LLM_API_KEY || '';
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4';
+const deepseek = createDeepSeek({
+  baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+  apiKey: process.env.DEEPSEEK_API_KEY || '',
+});
 
-async function llmCall(prompt: string): Promise<string> {
-  // 通用 LLM 调用接口
-  // 可以对接 OpenAI / DeepSeek / MiniMax
-  const response = await fetch(LLM_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${LLM_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: LLM_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.7,
-      max_tokens: 4096,
-    }),
-  });
+const MODEL_CONFIG = {
+  deepseek: {
+    provider: deepseek,
+    model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+  },
+  minimax: {
+    provider: minimax,
+    model: process.env.MINIMAX_MODEL || 'MiniMax-M2.7',
+  },
+} as const;
 
-  if (!response.ok) {
-    throw new Error(`LLM API 调用失败：${response.status} ${response.statusText}`);
-  }
+type ModelType = keyof typeof MODEL_CONFIG;
 
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || '';
+// 简化版 Story Analysis - 返回关键信息
+const STORY_ANALYSIS_PROMPT = `你是一个专业的电影分镜师。分析以下故事，输出JSON。
+
+要求：
+1. 提取标题、类型、风格、主题
+2. 识别所有角色（最多8个），给出名称和简述
+3. 划分场景（最多6个），每个场景包含地点、时间和概述
+4. 估算总时长（分钟）
+
+输出严格JSON：
+{
+  "title": "标题",
+  "genre": "类型",
+  "tone": "风格",
+  "theme": "主题",
+  "estimatedDurationSec": 120,
+  "characters": [{"name": "角色名", "description": "描述"}],
+  "scenes": [{"location": "地点", "timeOfDay": "day|night|dusk|unknown", "summary": "场景描述"}]
 }
 
-// GET /api/drafts - 列出所有 Draft
+故事文本：
+{storyText}
+
+JSON：`;
+
+// 简化版 Shot Expansion - 单个场景
+const SHOT_EXPANSION_PROMPT = `根据以下场景信息，生成3-5个分镜。
+
+场景：{location} / {timeOfDay}
+描述：{summary}
+角色：{characters}
+
+每个分镜输出JSON：
+{
+  "sequence": 1,
+  "purpose": "establishing|action|reaction|transition|closeup",
+  "durationSec": 3-8,
+  "shotType": "远景|全景|中景|近景|特写",
+  "cameraAngle": "平视|仰视|俯视",
+  "cameraMovement": "固定|推|拉|摇|移|跟",
+  "visualDescription": "详细画面描述",
+  "emotion": "平静|紧张|悬疑|欢快|悲伤|戏剧性"
+}
+
+只输出JSON数组，不要其他文字：`;
+
+function buildPrompt(scene: any, characters: any[]): string {
+  const charStr = characters.map(c => c.name).join('、') || '主角';
+  return SHOT_EXPANSION_PROMPT
+    .replace('{location}', scene.location)
+    .replace('{timeOfDay}', scene.timeOfDay)
+    .replace('{summary}', scene.summary)
+    .replace('{characters}', charStr);
+}
+
+function parseJson<T>(text: string, fallback: T): T {
+  try {
+    const match = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+    if (match) return JSON.parse(match[1]);
+  } catch {}
+  return fallback;
+}
+
+// GET /api/drafts - 列表
 export async function GET() {
-  // 第一阶段暂时返回空列表
   return NextResponse.json({ drafts: [] });
 }
 
-// POST /api/drafts - 创建新 Draft
+// POST /api/drafts - 流式创建
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { storyText, language = 'zh', title } = body;
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data: object) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      };
 
-    if (!storyText || storyText.trim().length < 50) {
-      return NextResponse.json(
-        { error: '故事文本至少需要 50 个字符' },
-        { status: 400 }
-      );
-    }
+      try {
+        const body = await request.json();
+        const { storyText, language = 'zh', title, model = 'deepseek' } = body;
 
-    if (storyText.length > 50000) {
-      return NextResponse.json(
-        { error: '故事文本不能超过 50000 字符' },
-        { status: 400 }
-      );
-    }
+        if (!storyText || storyText.trim().length < 50) {
+          send({ error: '故事文本至少需要 50 个字符' });
+          controller.close();
+          return;
+        }
 
-    const draftId = generateDraftId();
+        if (storyText.length > 100000) {
+          send({ error: '故事文本不能超过 100000 字符' });
+          controller.close();
+          return;
+        }
 
-    // 启动异步生成
-    runGenerationPipeline({
-      draftId,
-      storyText: storyText.trim(),
-      language,
-      title,
-      llmCall,
-    }).catch(console.error);
+        const modelType = model in MODEL_CONFIG ? model : 'deepseek';
+        const config = MODEL_CONFIG[modelType as ModelType];
+        const modelInstance = config.provider.chat(config.model);
 
-    return NextResponse.json({
-      id: draftId,
-      status: 'generating',
-    }, { status: 201 });
+        const draftId = generateDraftId();
+        send({ type: 'start', draftId, status: 'analyzing' });
 
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e.message || '创建 Draft 失败' },
-      { status: 500 }
-    );
-  }
+        // Step 1: 故事分析
+        const analysisPrompt = STORY_ANALYSIS_PROMPT.replace('{storyText}', storyText.slice(0, 30000));
+        const { text: analysisText } = await generateText({
+          model: modelInstance,
+          messages: [{ role: 'user', content: analysisPrompt }],
+          maxOutputTokens: 4096,
+          temperature: 0.7,
+        });
+
+        const analysis = parseJson(analysisText, {
+          title: title || '未命名',
+          genre: '剧情',
+          tone: '写实',
+          theme: '人生',
+          estimatedDurationSec: 120,
+          characters: [],
+          scenes: [{ location: '未知', timeOfDay: 'unknown', summary: storyText.slice(0, 200) }],
+        });
+
+        send({ type: 'analysis', data: analysis, status: 'expanding' });
+
+        // Step 2: 分镜扩展（每个场景）
+        const characters = analysis.characters || [];
+        const scenes: Array<{ id: string; sequence: number; location: string; timeOfDay: string; summary: string; shots: any[] }> = (analysis.scenes || []).map((s: any, i: number) => ({
+          id: `scene_${i + 1}`,
+          sequence: i + 1,
+          location: s.location,
+          timeOfDay: s.timeOfDay || 'unknown',
+          summary: s.summary,
+          shots: [],
+        }));
+
+        for (let i = 0; i < scenes.length; i++) {
+          const scene = scenes[i];
+          send({ type: 'scene_progress', sceneIndex: i, totalScenes: scenes.length, status: 'expanding' });
+
+          const scenePrompt = buildPrompt(scene, characters);
+          try {
+            const { text: shotsText } = await generateText({
+              model: modelInstance,
+              messages: [{ role: 'user', content: scenePrompt }],
+              maxOutputTokens: 2048,
+              temperature: 0.7,
+            });
+
+            const shotsData = parseJson<any[]>(shotsText, []);
+            if (Array.isArray(shotsData)) {
+              scene.shots = shotsData.map((shot, j) => ({
+                id: `shot_${i + 1}_${j + 1}`,
+                ...shot,
+                subjects: characters.slice(0, 2).map((_: any, idx: number) => `char_${idx + 1}`),
+                platformPrompts: {
+                  kling: { text: buildPromptText(shot, 'kling'), status: 'ready' },
+                  runway: { text: buildPromptText(shot, 'runway'), status: 'ready' },
+                  sora: { text: buildPromptText(shot, 'sora'), status: 'ready' },
+                },
+                meta: { aiGenerated: true, userEditedFields: [] },
+              }));
+            }
+          } catch (e: any) {
+            console.error(`Scene ${i + 1} expansion failed:`, e);
+          }
+        }
+
+        // 完成
+        const draft = {
+          id: draftId,
+          status: 'ready',
+          source: { language, title, storyText },
+          storySummary: {
+            title: analysis.title || title || '未命名',
+            genre: analysis.genre,
+            tone: analysis.tone,
+            theme: analysis.theme,
+            estimatedDurationSec: analysis.estimatedDurationSec || 120,
+            characters: characters.map((c: any, i: number) => ({ id: `char_${i + 1}`, ...c })),
+          },
+          scenes,
+          generationMeta: {
+            model: config.model,
+            version: '1.0',
+            lastGeneratedAt: new Date().toISOString(),
+            warnings: [],
+          },
+        };
+
+        send({ type: 'done', draft });
+
+      } catch (e: any) {
+        console.error('Stream error:', e);
+        send({ error: e.message || '生成失败' });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
+}
+
+function buildPromptText(shot: any, platform: string): string {
+  const { shotType, cameraAngle, cameraMovement, visualDescription, emotion } = shot;
+  const prefix = platform === 'kling' ? 'Cinematic video' : platform === 'runway' ? 'Film still' : 'Cinematic scene';
+  return `${prefix}, ${shotType || '中景'}, ${cameraAngle || '平视'}, ${cameraMovement || '固定'} shot, ${visualDescription || ''}, ${emotion || '平静'} mood`.trim();
 }
