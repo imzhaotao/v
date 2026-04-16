@@ -306,7 +306,7 @@ export async function POST(request: NextRequest) {
             // 预处理：去掉 markdown 代码块标记
             const cleanedText = shotsText.replace(/```(?:json)?\n?/gi, '').replace(/```\n?/gi, '').trim();
             const shotsData = parseJson<GeneratedShot[]>(cleanedText, []);
-            send({ type: 'debug', message: `[scene${i+1}] raw length=${shotsText.length}, cleaned length=${cleanedText.length}, parsed shots=${shotsData.length}, first 100 chars: ${cleanedText.slice(0, 200)}` });
+            send({ type: 'debug', message: `[scene${i+1}] raw length=${shotsText.length}, cleaned length=${cleanedText.length}, parsed shots=${shotsData.length}, first 200 chars: ${JSON.stringify(shotsText.slice(0, 200))}` });
             if (Array.isArray(shotsData)) {
               scene.shots = shotsData.map((shot, j) => ({
                 id: `shot_${i + 1}_${j + 1}`,
