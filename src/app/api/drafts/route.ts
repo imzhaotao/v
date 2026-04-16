@@ -135,14 +135,32 @@ function buildScenePrompt(scene: PromptScene, characters: PromptCharacter[]): st
 
 function parseJson<T>(text: string, fallback: T): T {
   try {
-    // Try to find a complete JSON object or array
-    const cleaned = text.replace(/^[^\{]*\{/, '{').replace(/\}[^\}]*$/, '}');
-    const parsed = JSON.parse(cleaned);
-    // 确保 characters 不为空
-    if (Array.isArray(parsed?.characters) && parsed.characters.length === 0) {
-      parsed.characters = [{ name: '主角', description: '故事中的主要人物' }];
+    // Try direct parse first
+    try { return JSON.parse(text); } catch {}
+
+    // Try to find JSON array in text (for shots)
+    const arrStart = text.indexOf('[');
+    const arrEnd = text.lastIndexOf(']');
+    if (arrStart >= 0 && arrEnd > arrStart) {
+      const arrText = text.slice(arrStart, arrEnd + 1);
+      const parsed = JSON.parse(arrText) as unknown;
+      if (Array.isArray(parsed)) return parsed as T;
     }
-    return parsed;
+
+    // Try to find JSON object in text (for analysis)
+    const objStart = text.indexOf('{');
+    const objEnd = text.lastIndexOf('}');
+    if (objStart >= 0 && objEnd > objStart) {
+      const objText = text.slice(objStart, objEnd + 1);
+      const parsed = JSON.parse(objText);
+      // Ensure characters not empty
+      if (Array.isArray(parsed?.characters) && parsed.characters.length === 0) {
+        parsed.characters = [{ name: '主角', description: '故事中的主要人物' }];
+      }
+      return parsed;
+    }
+
+    return fallback;
   } catch {
     return fallback;
   }
@@ -228,12 +246,13 @@ export async function POST(request: NextRequest) {
 
         // Step 1: 故事分析
         const analysisPrompt = STORY_ANALYSIS_PROMPT.replace('{storyText}', storyText.slice(0, 30000));
-        const { text: analysisText } = await generateText({
+        const { text: rawAnalysisText } = await generateText({
           model: modelInstance,
           messages: [{ role: 'user', content: analysisPrompt }],
           maxOutputTokens: 4096,
           temperature: 0.7,
         });
+        const analysisText = rawAnalysisText.replace(/```(?:json)?\n?/gi, '').trim();
 
         const analysis = parseJson(analysisText, {
           title: title || '故事',
@@ -278,7 +297,9 @@ export async function POST(request: NextRequest) {
               temperature: 0.7,
             });
 
-            const shotsData = parseJson<GeneratedShot[]>(shotsText, []);
+            // 预处理：去掉 markdown 代码块标记
+            const cleanedText = shotsText.replace(/```(?:json)?\n?/gi, '').trim();
+            const shotsData = parseJson<GeneratedShot[]>(cleanedText, []);
             if (Array.isArray(shotsData)) {
               scene.shots = shotsData.map((shot, j) => ({
                 id: `shot_${i + 1}_${j + 1}`,
