@@ -349,6 +349,7 @@ export default function Home() {
           {draft && (
             <DraftView
               draft={draft}
+              onDraftChange={setDraft}
               expandedShots={expandedShots}
               onToggleShot={toggleShot}
               onCopy={copyPrompt}
@@ -380,8 +381,9 @@ export default function Home() {
   );
 }
 
-function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
+function DraftView({ draft, onDraftChange, expandedShots, onToggleShot, onCopy, onSave }: {
   draft: StoryDraft;
+  onDraftChange: (draft: StoryDraft) => void;
   expandedShots: Set<string>;
   onToggleShot: (id: string) => void;
   onCopy: (text: string) => void;
@@ -457,6 +459,40 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
                   )}
                   <span className="text-sm font-medium text-white text-center">{char.name}</span>
                   <span className="text-xs text-gray-500 text-center leading-tight">{char.description.slice(0, 20)}...</span>
+                  {!char.imageUrl && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!draft.id) return;
+                        const imgResult = await fetch('/api/generate-image', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ characterName: char.name, description: char.description, draftId: draft.id, characterId: char.id }),
+                        }).then(r => r.json());
+                        if (imgResult.error) { alert('生成失败：' + imgResult.error); return; }
+                        // 更新本地 draft
+                        const updated = {
+                          ...draft,
+                          storySummary: {
+                            ...draft.storySummary,
+                            characters: draft.storySummary.characters.map(c =>
+                              c.id === char.id ? { ...c, imageUrl: imgResult.url } : c
+                            ),
+                          },
+                        };
+                        onDraftChange(updated);
+                        // 保存到数据库
+                        await fetch(`/api/drafts/${draft.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ storySummary: updated.storySummary }),
+                        });
+                      }}
+                      className="mt-1 px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded-lg text-xs font-medium transition-colors w-full"
+                    >
+                      生成图片
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

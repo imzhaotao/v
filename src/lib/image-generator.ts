@@ -1,18 +1,51 @@
 /**
- * MiniMax 文生图 API
+ * MiniMax 文生图 API + 上传到 Supabase Storage
  * 文档：https://www.minimaxi.com/document/Image%20Generation
  */
-import { createOpenAI } from '@ai-sdk/openai';
-
-const minimax = createOpenAI({
-  baseURL: process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1',
-  apiKey: process.env.MINIMAX_API_KEY || '',
-});
 
 export interface ImageResult {
   url?: string;
   base64?: string;
   error?: string;
+}
+
+async function callMinimaxImage(prompt: string): Promise<ImageResult> {
+  const apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) return { error: 'MINIMAX_API_KEY not configured' };
+
+  try {
+    const response = await fetch('https://api.minimaxi.com/v1/image_generation', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'image-01',
+        prompt,
+        num_images: 1,
+        aspect_ratio: '3:2',
+        extra: {
+          return_url: true,
+        },
+      }),
+    });
+
+    const data = await response.json() as any;
+
+    if (!response.ok) {
+      return { error: data.error?.message || `API error: ${response.status}` };
+    }
+
+    if (data.data?.[0]?.url) {
+      return { url: data.data[0].url, base64: data.data[0].base64 };
+    }
+
+    return { error: 'No image URL in response' };
+
+  } catch (e: any) {
+    return { error: e.message };
+  }
 }
 
 export async function generateCharacterImage(
@@ -49,39 +82,54 @@ export async function generateShotImage(
   return callMinimaxImage(prompt);
 }
 
-async function callMinimaxImage(prompt: string): Promise<ImageResult> {
-  const apiKey = process.env.MINIMAX_API_KEY;
-  if (!apiKey) return { error: 'MINIMAX_API_KEY not configured' };
-
+/**
+ * 下载图片并上传到 Supabase Storage，返回永久 URL
+ */
+export async function uploadImageToSupabase(
+  imageUrl: string,
+  bucket: string,
+  path: string
+): Promise<{ url?: string; error?: string }> {
   try {
-    const response = await fetch('https://api.minimaxi.com/v1/image_generation', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'image-01',
-        prompt,
-        num_images: 1,
-        aspect_ratio: '3:2',
-        extra: {
-          return_url: true,
+    // 下载图片
+    const imgResponse = await fetch(imageUrl);
+    if (!imgResponse.ok) {
+      return { error: `Failed to fetch image: ${imgResponse.status}` };
+    }
+    const arrayBuffer = await imgResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // 获取 content-type
+    const contentType = imgResponse.headers.get('content-type') || 'image/jpeg';
+
+    // 上传到 Supabase Storage
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      return { error: 'Missing Supabase credentials' };
+    }
+
+    const uploadResponse = await fetch(
+      `${supabaseUrl}/storage/v1/object/${bucket}/${path}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': contentType,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'x-upsert': 'true',
         },
-      }),
-    });
+        body: buffer,
+      }
+    );
 
-    const data = await response.json() as any;
-
-    if (!response.ok) {
-      return { error: data.error?.message || `API error: ${response.status}` };
+    if (!uploadResponse.ok) {
+      return { error: `Upload failed: ${uploadResponse.status}` };
     }
 
-    if (data.data?.[0]?.url) {
-      return { url: data.data[0].url, base64: data.data[0].base64 };
-    }
-
-    return { error: 'No image URL in response' };
+    // 返回公开 URL
+    const publicUrl = `${supabaseUrl}/storage/v1/object/public/${bucket}/${path}`;
+    return { url: publicUrl };
 
   } catch (e: any) {
     return { error: e.message };
