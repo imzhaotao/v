@@ -26,7 +26,7 @@ function getErrorMessage(error: unknown): string {
 export default function Home() {
   const [storyText, setStoryText] = useState('');
   const [title, setTitle] = useState('');
-  const [model, setModel] = useState<string>('minimax');
+  const [model, setModel] = useState<string>('deepseek');
   const [draft, setDraft] = useState<StoryDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -154,8 +154,6 @@ export default function Home() {
                   icon: '/favicon.ico',
                 });
               }
-            } else if (data.type === 'debug') {
-              console.log('[DEBUG]', data.message);
             } else if (data.error) {
               throw new Error(data.error);
             }
