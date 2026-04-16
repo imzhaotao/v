@@ -13,6 +13,7 @@ interface DraftListItem {
   id: string;
   title: string | null;
   story_text: string;
+  storyText?: string;
   status: string;
   created_at: string;
   updated_at: string;
@@ -162,6 +163,21 @@ export default function Home() {
     setExpandedShots(next);
   }
 
+  function expandAll() {
+    if (!draft) return;
+    const allIds = new Set<string>();
+    for (const scene of draft.scenes) {
+      for (const shot of scene.shots) {
+        allIds.add(shot.id);
+      }
+    }
+    setExpandedShots(allIds);
+  }
+
+  function collapseAll() {
+    setExpandedShots(new Set());
+  }
+
   function copyPrompt(text: string) {
     navigator.clipboard.writeText(text);
   }
@@ -220,9 +236,10 @@ export default function Home() {
                     const res = await fetch(`/api/drafts/${d.id}`);
                     const data: (StoryDraft & { error?: string }) | { error?: string } = await res.json();
                     if (!res.ok) throw new Error((data as { error?: string }).error || '读取失败');
-                    setDraft(data as StoryDraft);
-                    setStoryText('');
-                    setTitle('');
+                    const loadedDraft = data as StoryDraft;
+                    setDraft(loadedDraft);
+                    setStoryText(loadedDraft.source?.storyText || '');
+                    setTitle(loadedDraft.source?.title || '');
                     setHistoryOpen(false);
                   } catch (e: unknown) {
                     alert('读取失败：' + getErrorMessage(e));
@@ -355,8 +372,11 @@ export default function Home() {
           {draft && (
             <DraftView
               draft={draft}
+              onDraftChange={setDraft}
               expandedShots={expandedShots}
               onToggleShot={toggleShot}
+              onExpandAll={expandAll}
+              onCollapseAll={collapseAll}
               onCopy={copyPrompt}
               onSave={async () => {
                 try {
@@ -386,8 +406,11 @@ export default function Home() {
   );
 }
 
-function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
+function DraftView({ draft, onDraftChange, expandedShots, onToggleShot, onExpandAll, onCollapseAll, onCopy, onSave }: {
   draft: StoryDraft;
+  onDraftChange: (draft: StoryDraft) => void;
+onExpandAll: () => void;
+onCollapseAll: () => void;
   expandedShots: Set<string>;
   onToggleShot: (id: string) => void;
   onCopy: (text: string) => void;
@@ -412,6 +435,18 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
           <span className="text-xs text-gray-500">{draft.scenes.length} 场景</span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={onExpandAll}
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+          >
+            展开全部
+          </button>
+          <button
+            onClick={onCollapseAll}
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+          >
+            收起全部
+          </button>
           <button
             onClick={onSave}
             className="px-3 py-1.5 text-xs bg-green-900/30 hover:bg-green-900/50 border border-green-800/50 text-green-400 rounded-lg transition-colors"
@@ -451,14 +486,52 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
         {draft.storySummary.characters.length > 0 && (
           <div className="border-t border-gray-800 pt-4">
             <h4 className="text-xs font-medium text-gray-400 mb-2">角色</h4>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-3">
               {draft.storySummary.characters.map(char => (
-                <div key={char.id} className="flex items-center gap-2 bg-gray-950/50 rounded-lg px-3 py-1.5 border border-gray-800">
-                  <div className="w-5 h-5 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                    {char.name[0]}
-                  </div>
-                  <span className="text-sm text-white">{char.name}</span>
-                  <span className="text-xs text-gray-500">{char.description.slice(0, 15)}...</span>
+                <div key={char.id} className="flex flex-col items-center gap-1.5 bg-gray-950/50 rounded-xl p-3 border border-gray-800 w-28">
+                  {char.imageUrl ? (
+                    <img src={char.imageUrl} alt={char.name} className="w-16 h-16 rounded-full object-cover border-2 border-gray-700" />
+                  ) : (
+                    <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white text-lg font-bold border-2 border-blue-500/50">
+                      {char.name[0]}
+                    </div>
+                  )}
+                  <span className="text-sm font-medium text-white text-center">{char.name}</span>
+                  <span className="text-xs text-gray-500 text-center leading-tight">{char.description.slice(0, 20)}...</span>
+                  {!char.imageUrl && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!draft.id) return;
+                        const imgResult = await fetch('/api/generate-image', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ characterName: char.name, description: char.description, draftId: draft.id, characterId: char.id }),
+                        }).then(r => r.json());
+                        if (imgResult.error) { alert('生成失败：' + imgResult.error); return; }
+                        // 更新本地 draft
+                        const updated = {
+                          ...draft,
+                          storySummary: {
+                            ...draft.storySummary,
+                            characters: draft.storySummary.characters.map(c =>
+                              c.id === char.id ? { ...c, imageUrl: imgResult.url } : c
+                            ),
+                          },
+                        };
+                        onDraftChange(updated);
+                        // 保存到数据库
+                        await fetch(`/api/drafts/${draft.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ storySummary: updated.storySummary }),
+                        });
+                      }}
+                      className="mt-1 px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded-lg text-xs font-medium transition-colors w-full"
+                    >
+                      生成图片
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
