@@ -4,6 +4,7 @@ import { createDeepSeek } from '@ai-sdk/deepseek';
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateDraftId } from '@/lib/pipeline';
 import { supabaseServer as supabase } from '@/lib/supabase-server';
+import { generateCharacterImage } from '@/lib/image-generator';
 import type { Scene, Shot, StoryDraft, TimeOfDay } from '@/types/draft';
 
 const deepseek = createDeepSeek({
@@ -283,13 +284,31 @@ export async function POST(request: NextRequest) {
           }
         }
 
+        // Step 3: 为每个角色生成图片
+        const charactersWithImages = await Promise.all(
+          characters.map(async (c, i) => {
+            const charId = `char_${i + 1}`;
+            try {
+              const imgResult = await generateCharacterImage(
+                c.name,
+                c.description,
+                `Story: ${analysis.title || title || '未命名'}`
+              );
+              if (imgResult.url) {
+                return { id: charId, name: c.name, description: c.description, imageUrl: imgResult.url };
+              }
+            } catch {}
+            return { id: charId, name: c.name, description: c.description };
+          })
+        );
+
         const storySummary = {
           title: analysis.title || title || '未命名',
           genre: analysis.genre,
           tone: analysis.tone,
           theme: analysis.theme,
           estimatedDurationSec: analysis.estimatedDurationSec || 120,
-          characters: characters.map((c, i) => ({ id: `char_${i + 1}`, ...c })),
+          characters: charactersWithImages,
         };
 
         // 更新数据库

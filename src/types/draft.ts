@@ -34,6 +34,7 @@ export interface Character {
   description: string;
   appearance?: string;
   voiceStyle?: string;
+  imageUrl?: string;
 }
 
 // ================================

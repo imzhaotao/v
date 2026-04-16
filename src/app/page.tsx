@@ -445,14 +445,18 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
         {draft.storySummary.characters.length > 0 && (
           <div className="border-t border-gray-800 pt-4">
             <h4 className="text-xs font-medium text-gray-400 mb-2">角色</h4>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-3">
               {draft.storySummary.characters.map(char => (
-                <div key={char.id} className="flex items-center gap-2 bg-gray-950/50 rounded-lg px-3 py-1.5 border border-gray-800">
-                  <div className="w-5 h-5 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                    {char.name[0]}
-                  </div>
-                  <span className="text-sm text-white">{char.name}</span>
-                  <span className="text-xs text-gray-500">{char.description.slice(0, 15)}...</span>
+                <div key={char.id} className="flex flex-col items-center gap-1.5 bg-gray-950/50 rounded-xl p-3 border border-gray-800 w-28">
+                  {char.imageUrl ? (
+                    <img src={char.imageUrl} alt={char.name} className="w-16 h-16 rounded-full object-cover border-2 border-gray-700" />
+                  ) : (
+                    <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white text-lg font-bold border-2 border-blue-500/50">
+                      {char.name[0]}
+                    </div>
+                  )}
+                  <span className="text-sm font-medium text-white text-center">{char.name}</span>
+                  <span className="text-xs text-gray-500 text-center leading-tight">{char.description.slice(0, 20)}...</span>
                 </div>
               ))}
             </div>
