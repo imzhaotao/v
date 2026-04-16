@@ -163,6 +163,21 @@ export default function Home() {
     setExpandedShots(next);
   }
 
+  function expandAll() {
+    if (!draft) return;
+    const allIds = new Set<string>();
+    for (const scene of draft.scenes) {
+      for (const shot of scene.shots) {
+        allIds.add(shot.id);
+      }
+    }
+    setExpandedShots(allIds);
+  }
+
+  function collapseAll() {
+    setExpandedShots(new Set());
+  }
+
   function copyPrompt(text: string) {
     navigator.clipboard.writeText(text);
   }
@@ -354,6 +369,8 @@ export default function Home() {
               onDraftChange={setDraft}
               expandedShots={expandedShots}
               onToggleShot={toggleShot}
+              onExpandAll={expandAll}
+              onCollapseAll={collapseAll}
               onCopy={copyPrompt}
               onSave={async () => {
                 try {
@@ -383,9 +400,11 @@ export default function Home() {
   );
 }
 
-function DraftView({ draft, onDraftChange, expandedShots, onToggleShot, onCopy, onSave }: {
+function DraftView({ draft, onDraftChange, expandedShots, onToggleShot, onExpandAll, onCollapseAll, onCopy, onSave }: {
   draft: StoryDraft;
   onDraftChange: (draft: StoryDraft) => void;
+onExpandAll: () => void;
+onCollapseAll: () => void;
   expandedShots: Set<string>;
   onToggleShot: (id: string) => void;
   onCopy: (text: string) => void;
@@ -410,6 +429,18 @@ function DraftView({ draft, onDraftChange, expandedShots, onToggleShot, onCopy, 
           <span className="text-xs text-gray-500">{draft.scenes.length} 场景</span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={onExpandAll}
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+          >
+            展开全部
+          </button>
+          <button
+            onClick={onCollapseAll}
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
+          >
+            收起全部
+          </button>
           <button
             onClick={onSave}
             className="px-3 py-1.5 text-xs bg-green-900/30 hover:bg-green-900/50 border border-green-800/50 text-green-400 rounded-lg transition-colors"

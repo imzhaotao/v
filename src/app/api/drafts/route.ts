@@ -241,7 +241,9 @@ export async function POST(request: NextRequest) {
         send({ type: 'analysis', data: analysis, status: 'expanding' });
 
         // Step 2: 分镜扩展
-        const characters = analysis.characters || [];
+        const characters = (analysis.characters || []).length > 0
+          ? analysis.characters
+          : [{ name: '主角', description: '故事中的主要人物' }];
         const scenes: GeneratedScene[] =
           (analysis.scenes || []).map((s, i) => ({
             id: `scene_${i + 1}`,
