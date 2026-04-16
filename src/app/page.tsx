@@ -40,6 +40,10 @@ export default function Home() {
   const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
+    // 请求通知权限
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
     loadDraftList();
   }, []);
 
@@ -110,9 +114,15 @@ export default function Home() {
               setProgress('done');
               setProgressText('生成完成');
               setDraft(data.draft);
-              // 自动保存到数据库
               autoSaveDraft(data.draft);
               loadDraftList();
+              // 浏览器通知
+              if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('Story to Video', {
+                  body: `Draft "${data.draft?.storySummary?.title || '未命名'}" 生成完成！`,
+                  icon: '/favicon.ico',
+                });
+              }
             } else if (data.error) {
               throw new Error(data.error);
             }
