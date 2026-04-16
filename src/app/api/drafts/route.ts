@@ -268,7 +268,6 @@ export async function POST(request: NextRequest) {
         for (let i = 0; i < scenes.length; i++) {
           const scene = scenes[i];
           send({ type: 'scene_progress', sceneIndex: i, totalScenes: scenes.length, status: 'expanding' });
-          send({ type: 'scene_partial', scene, sceneIndex: i, totalScenes: scenes.length, status: 'expanding' });
 
           const scenePrompt = buildScenePrompt(scene, characters);
           try {
@@ -292,6 +291,8 @@ export async function POST(request: NextRequest) {
                 },
                 meta: { aiGenerated: true, userEditedFields: [] },
               })) as Shot[];
+              // 场景分镜生成完，发送完整数据
+              send({ type: 'scene_done', scene: { ...scene, shots: scene.shots }, sceneIndex: i, totalScenes: scenes.length, status: 'expanding' });
             }
           } catch (error: unknown) {
             console.error(`Scene ${i + 1} expansion failed:`, error);

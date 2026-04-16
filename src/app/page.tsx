@@ -129,25 +129,17 @@ export default function Home() {
                   },
                 };
               });
-            } else if (data.type === 'scene_partial') {
-              // 增量更新场景
+            } else if (data.type === 'scene_done') {
+              // 场景分镜生成完，增量更新
               setDraft(prev => {
                 if (!prev) return prev;
-                const existing = prev.scenes.findIndex(s => s.id === `scene_${data.sceneIndex + 1}`);
-                const newScene = {
-                  id: `scene_${data.sceneIndex + 1}`,
-                  sequence: data.sceneIndex + 1,
-                  location: data.scene.location,
-                  timeOfDay: data.scene.timeOfDay,
-                  summary: data.scene.summary,
-                  shots: [],
-                };
+                const existing = prev.scenes.findIndex(s => s.id === data.scene.id);
                 if (existing >= 0) {
                   const updated = [...prev.scenes];
-                  updated[existing] = newScene;
+                  updated[existing] = data.scene;
                   return { ...prev, scenes: updated };
                 }
-                return { ...prev, scenes: [...prev.scenes, newScene] };
+                return { ...prev, scenes: [...prev.scenes, data.scene] };
               });
             } else if (data.type === 'done') {
               setProgress('done');
