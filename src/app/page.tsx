@@ -36,8 +36,8 @@ export default function Home() {
   const [expandedShots, setExpandedShots] = useState<Set<string>>(new Set());
   const [draftList, setDraftList] = useState<DraftListItem[]>([]);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
-  // 加载历史列表
   useEffect(() => {
     loadDraftList();
   }, []);
@@ -47,20 +47,15 @@ export default function Home() {
     try {
       const res = await fetch('/api/drafts');
       const data: { drafts?: DraftListItem[]; error?: string } = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || '数据库读取失败');
-      }
-
+      if (!res.ok) throw new Error(data.error || '数据库读取失败');
       setDraftList(data.drafts || []);
-    } catch (error: unknown) {
-      setDbError('数据库读取失败：' + getErrorMessage(error));
-      return;
+    } catch (e: unknown) {
+      setDbError('数据库读取失败：' + getErrorMessage(e));
     }
   }
 
   async function handleGenerate() {
-    if (!storyText.trim()) return;
+    if (!storyText.trim() || storyText.length < 20) return;
 
     setLoading(true);
     setError(null);
@@ -114,6 +109,8 @@ export default function Home() {
               setProgress('done');
               setProgressText('生成完成');
               setDraft(data.draft);
+              // 自动保存到数据库
+              autoSaveDraft(data.draft);
               loadDraftList();
             } else if (data.error) {
               throw new Error(data.error);
@@ -123,11 +120,28 @@ export default function Home() {
           }
         }
       }
-    } catch (error: unknown) {
-      setError(getErrorMessage(error));
+    } catch (e: unknown) {
+      setError(getErrorMessage(e));
       setProgress('error');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function autoSaveDraft(draftData: StoryDraft) {
+    if (!draftData.id) return;
+    try {
+      await fetch(`/api/drafts/${draftData.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storySummary: draftData.storySummary,
+          scenes: draftData.scenes,
+          status: draftData.status,
+        }),
+      });
+    } catch {
+      // 自动保存失败不阻塞流程
     }
   }
 
@@ -153,193 +167,200 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 text-gray-100">
+    <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
       {/* Header */}
-      <header className="border-b border-gray-800/50 backdrop-blur-sm bg-gray-950/80 sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-6 py-4">
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
-            Story to Video
-          </h1>
-          <p className="text-sm text-gray-400 mt-0.5">AI 分镜生成工作台</p>
+      <header className="border-b border-gray-800/50 bg-gray-950/90 backdrop-blur sticky top-0 z-20">
+        <div className="max-w-screen-xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+              Story to Video
+            </h1>
+            <p className="text-xs text-gray-500">AI 分镜生成工作台</p>
+          </div>
+          <button
+            onClick={() => setHistoryOpen(!historyOpen)}
+            className="flex items-center gap-2 px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl text-sm transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            历史
+            {draftList.length > 0 && (
+              <span className="bg-blue-600 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                {draftList.length}
+              </span>
+            )}
+          </button>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        {/* 数据库错误提示 */}
-        {dbError && (
-          <div className="mb-6 p-4 bg-red-900/20 border border-red-800/50 rounded-xl text-red-300 text-sm">
-            <span className="font-medium">数据库错误：</span>{dbError}
+      <div className="flex flex-1 relative">
+        {/* 历史记录侧边栏 */}
+        <aside className={`absolute top-0 right-0 h-full w-80 bg-gray-900/95 border-l border-gray-800 transform transition-transform z-10 ${historyOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+          <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-white">历史记录</h2>
+            <button onClick={() => setHistoryOpen(false)} className="text-gray-500 hover:text-white">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-        )}
-
-        {/* 历史记录列表 */}
-        {draftList.length > 0 && (
-          <section className="mb-10">
-            <h2 className="text-lg font-semibold text-white mb-4">历史记录</h2>
-            <div className="space-y-2">
-              {draftList.map(d => (
-                <button
-                  key={d.id}
-                  onClick={async () => {
-                    try {
-                      const res = await fetch(`/api/drafts/${d.id}`);
-                      const data: (StoryDraft & { error?: string }) | { error?: string } = await res.json();
-
-                      if (!res.ok) {
-                        throw new Error(data.error || '读取 Draft 失败');
-                      }
-
-                      setDraft(data as StoryDraft);
-                      setStoryText('');
-                      setTitle('');
-                    } catch (error: unknown) {
-                      setError(getErrorMessage(error));
-                    }
-                  }}
-                  className="w-full text-left bg-gray-900/50 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/50 transition-colors"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="font-medium text-white truncate">{d.title || '未命名'}</div>
-                    <span className={`px-2 py-0.5 rounded text-xs ${d.status === 'ready' ? 'bg-green-900/30 text-green-400' : d.status === 'failed' ? 'bg-red-900/30 text-red-400' : 'bg-blue-900/30 text-blue-400'}`}>
-                      {d.status === 'ready' ? '就绪' : d.status === 'failed' ? '失败' : '生成中'}
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    {new Date(d.created_at).toLocaleString('zh-CN')}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* 输入区 */}
-        <section className="mb-10">
-          <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6">
-            <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              <span className="w-2 h-2 bg-blue-500 rounded-full" />
-              输入故事
-            </h2>
-
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-400 mb-2">标题（可选）</label>
-              <input
-                type="text"
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                placeholder="给故事起个标题"
-                className="w-full px-4 py-3 bg-gray-950/50 border border-gray-700 rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
-              />
-            </div>
-
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium text-gray-400">故事文本 *</label>
-                <span className={`text-xs ${storyText.length < 20 ? 'text-red-400' : 'text-gray-500'}`}>
-                  {storyText.length.toLocaleString()} / 100,000
-                </span>
-              </div>
-              <textarea
-                value={storyText}
-                onChange={e => setStoryText(e.target.value)}
-                placeholder="粘贴你的短篇故事...（至少 20 字）"
-                rows={10}
-                className="w-full px-4 py-3 bg-gray-950/50 border border-gray-700 rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 resize-y font-mono text-sm leading-relaxed"
-              />
-              {storyText.length > 0 && storyText.length < 20 && (
-                <p className="text-xs text-orange-400 mt-2">故事文本至少需要 20 个字符才能生成（还需 {20 - storyText.length} 字）</p>
-              )}
-            </div>
-
-            {/* 进度指示 */}
-            {loading && (
-              <div className="mb-4 p-4 bg-blue-900/20 border border-blue-800/50 rounded-xl">
-                <div className="flex items-center gap-3 mb-2">
-                  <svg className="animate-spin h-5 w-5 text-blue-400" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  <span className="text-blue-300 font-medium">{progressText}</span>
+          <div className="overflow-y-auto h-[calc(100%-57px)] p-3 space-y-2">
+            {dbError && (
+              <div className="text-xs text-red-400 p-2">{dbError}</div>
+            )}
+            {draftList.length === 0 && !dbError && (
+              <div className="text-xs text-gray-500 p-2">暂无历史记录</div>
+            )}
+            {draftList.map(d => (
+              <button
+                key={d.id}
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`/api/drafts/${d.id}`);
+                    const data: (StoryDraft & { error?: string }) | { error?: string } = await res.json();
+                    if (!res.ok) throw new Error((data as { error?: string }).error || '读取失败');
+                    setDraft(data as StoryDraft);
+                    setStoryText('');
+                    setTitle('');
+                    setHistoryOpen(false);
+                  } catch (e: unknown) {
+                    alert('读取失败：' + getErrorMessage(e));
+                  }
+                }}
+                className="w-full text-left bg-gray-800/50 hover:bg-gray-800 border border-gray-800 rounded-lg p-3 transition-colors"
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium text-white truncate">{d.title || '未命名'}</span>
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${d.status === 'ready' ? 'bg-green-400' : d.status === 'failed' ? 'bg-red-400' : 'bg-blue-400'}`} />
                 </div>
-                {totalScenes > 0 && (
-                  <div className="text-sm text-gray-400">场景进度：{sceneIndex} / {totalScenes}</div>
-                )}
-                <div className="mt-2 w-full bg-gray-800 rounded-full h-1.5">
-                  <div
-                    className="bg-blue-500 h-1.5 rounded-full transition-all"
-                    style={{ width: progress === 'expanding' && totalScenes > 0 ? `${(sceneIndex / totalScenes) * 100}%` : '30%' }}
+                <div className="text-xs text-gray-500">{new Date(d.created_at).toLocaleString('zh-CN')}</div>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* 主内容 */}
+        <main className="flex-1 max-w-screen-xl mx-auto w-full px-4 py-6">
+          {/* 输入区 */}
+          <section className="mb-6">
+            <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-5">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">标题（可选）</label>
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={e => setTitle(e.target.value)}
+                    placeholder="给故事起个标题"
+                    className="w-full px-3 py-2.5 bg-gray-950/50 border border-gray-700 rounded-xl text-white text-sm placeholder-gray-600 focus:outline-none focus:border-blue-500"
                   />
                 </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1.5">模型</label>
+                  <select
+                    value={model}
+                    onChange={e => setModel(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-gray-950/50 border border-gray-700 rounded-xl text-white text-sm focus:outline-none focus:border-blue-500 cursor-pointer"
+                  >
+                    {AVAILABLE_MODELS.map(m => (
+                      <option key={m} value={m}>{MODEL_LABELS[m] || m}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-end gap-2">
+                  <button
+                    onClick={handleGenerate}
+                    disabled={loading || !storyText.trim() || storyText.length < 20}
+                    className="flex-1 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-xl font-semibold text-sm transition-all shadow-lg shadow-blue-500/20"
+                  >
+                    {loading ? '生成中...' : '生成 Draft'}
+                  </button>
+                  <button onClick={handleClear} className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl text-sm font-medium transition-all">
+                    清空
+                  </button>
+                </div>
               </div>
-            )}
 
-            <div className="flex items-center gap-3">
-              <select
-                value={model}
-                onChange={e => setModel(e.target.value)}
-                className="px-4 py-3 bg-gray-950/50 border border-gray-700 rounded-xl text-white focus:outline-none focus:border-blue-500 cursor-pointer"
-              >
-                {AVAILABLE_MODELS.map(m => (
-                  <option key={m} value={m}>{MODEL_LABELS[m] || m}</option>
-                ))}
-              </select>
-              <button
-                onClick={handleGenerate}
-                disabled={loading || !storyText.trim() || storyText.length < 20}
-                className="px-8 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:from-gray-700 disabled:to-gray-700 disabled:text-gray-500 rounded-xl font-semibold transition-all shadow-lg shadow-blue-500/25"
-              >
-                {loading ? '生成中...' : '生成 Draft'}
-              </button>
-              <button onClick={handleClear} className="px-6 py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl font-medium transition-all">
-                清空
-              </button>
+              <div className="relative">
+                <textarea
+                  value={storyText}
+                  onChange={e => setStoryText(e.target.value)}
+                  placeholder="粘贴你的短篇故事...（至少 20 字）"
+                  rows={6}
+                  className="w-full px-4 py-3 bg-gray-950/50 border border-gray-700 rounded-xl text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 resize-none font-mono text-sm leading-relaxed"
+                />
+                <div className="absolute bottom-3 right-3 flex items-center gap-3">
+                  {storyText.length > 0 && storyText.length < 20 && (
+                    <span className="text-xs text-orange-400">还差 {20 - storyText.length} 字</span>
+                  )}
+                  <span className={`text-xs ${storyText.length < 20 ? 'text-red-400' : 'text-gray-500'}`}>
+                    {storyText.length.toLocaleString()} 字
+                  </span>
+                </div>
+              </div>
+
+              {/* 进度 */}
+              {loading && (
+                <div className="mt-4 p-3 bg-blue-900/20 border border-blue-800/40 rounded-xl">
+                  <div className="flex items-center gap-3 mb-2">
+                    <svg className="animate-spin h-4 w-4 text-blue-400" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <span className="text-blue-300 text-sm font-medium">{progressText}</span>
+                  </div>
+                  {totalScenes > 0 && (
+                    <div className="text-xs text-gray-400 mb-1.5">场景进度：{sceneIndex} / {totalScenes}</div>
+                  )}
+                  <div className="w-full bg-gray-800 rounded-full h-1.5">
+                    <div
+                      className="bg-blue-500 h-1.5 rounded-full transition-all"
+                      style={{ width: progress === 'expanding' && totalScenes > 0 ? `${(sceneIndex / totalScenes) * 100}%` : '30%' }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {error && (
+                <div className="mt-3 p-3 bg-red-900/20 border border-red-800/40 rounded-xl text-red-300 text-sm">
+                  <span className="font-medium">错误：</span>{error}
+                </div>
+              )}
             </div>
+          </section>
 
-            {error && (
-              <div className="mt-4 p-4 bg-red-900/20 border border-red-800/50 rounded-xl text-red-300 text-sm">
-                <span className="font-medium">错误：</span>{error}
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Draft 结果 */}
-        {draft && (
-          <DraftView
-            draft={draft}
-            expandedShots={expandedShots}
-            onToggleShot={toggleShot}
-            onCopy={copyPrompt}
-            onSave={async () => {
-              try {
-                if (!draft.id) {
-                  throw new Error('当前 Draft 没有数据库 ID，请重新生成后再保存');
+          {/* Draft 结果 */}
+          {draft && (
+            <DraftView
+              draft={draft}
+              expandedShots={expandedShots}
+              onToggleShot={toggleShot}
+              onCopy={copyPrompt}
+              onSave={async () => {
+                try {
+                  if (!draft.id) throw new Error('无 ID，请重新生成');
+                  const res = await fetch(`/api/drafts/${draft.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      storySummary: draft.storySummary,
+                      scenes: draft.scenes,
+                      status: draft.status,
+                    }),
+                  });
+                  const data: { error?: string } = await res.json();
+                  if (!res.ok) throw new Error(data.error || '保存失败');
+                  alert('已保存');
+                  loadDraftList();
+                } catch (e: unknown) {
+                  alert('保存失败：' + getErrorMessage(e));
                 }
-
-                const res = await fetch(`/api/drafts/${draft.id}`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    storySummary: draft.storySummary,
-                    scenes: draft.scenes,
-                    status: draft.status,
-                  }),
-                });
-                const data: { error?: string } = await res.json();
-
-                if (!res.ok) {
-                  throw new Error(data.error || '保存失败');
-                }
-
-                alert('已保存到数据库');
-                loadDraftList();
-              } catch (error: unknown) {
-                alert('保存失败：' + getErrorMessage(error));
-              }
-            }}
-          />
-        )}
-      </main>
+              }}
+            />
+          )}
+        </main>
+      </div>
     </div>
   );
 }
@@ -359,21 +380,22 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
   };
 
   return (
-    <section className="mb-10">
+    <section>
       {/* 状态栏 */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <h2 className="text-xl font-semibold text-white">Draft 概览</h2>
-          <span className={`px-3 py-1 rounded-full text-xs font-medium ${statusConfig[draft.status]?.bg} ${statusConfig[draft.status]?.text}`}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold text-white">{draft.storySummary.title || 'Draft'}</h2>
+          <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${statusConfig[draft.status]?.bg} ${statusConfig[draft.status]?.text}`}>
             {statusConfig[draft.status]?.label || draft.status}
           </span>
+          <span className="text-xs text-gray-500">{draft.scenes.length} 场景</span>
         </div>
-        <div className="flex items-center gap-2 border-l border-gray-700 pl-3">
+        <div className="flex items-center gap-2">
           <button
             onClick={onSave}
             className="px-3 py-1.5 text-xs bg-green-900/30 hover:bg-green-900/50 border border-green-800/50 text-green-400 rounded-lg transition-colors"
           >
-            保存到数据库
+            保存
           </button>
           <button
             onClick={() => downloadFile(exportAsJson(draft), `${draft.storySummary.title || 'draft'}.json`, 'application/json')}
@@ -385,7 +407,7 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
             onClick={() => downloadFile(exportAsMarkdown(draft), `${draft.storySummary.title || 'draft'}.md`, 'text/markdown')}
             className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg transition-colors"
           >
-            Markdown
+            MD
           </button>
           <button
             onClick={() => downloadFile(exportAsCsv(draft), `${draft.storySummary.title || 'draft'}.csv`, 'text/csv')}
@@ -397,28 +419,25 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
       </div>
 
       {/* 故事信息 */}
-      <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 mb-6">
-        <h3 className="text-2xl font-bold text-white mb-3">{draft.storySummary.title}</h3>
-        <div className="flex flex-wrap gap-3 mb-4">
-          {draft.storySummary.genre && <span className="px-3 py-1 bg-purple-900/30 border border-purple-800/50 rounded-lg text-sm text-purple-300">{draft.storySummary.genre}</span>}
-          {draft.storySummary.tone && <span className="px-3 py-1 bg-blue-900/30 border border-blue-800/50 rounded-lg text-sm text-blue-300">{draft.storySummary.tone}</span>}
-          {draft.storySummary.theme && <span className="px-3 py-1 bg-green-900/30 border border-green-800/50 rounded-lg text-sm text-green-300">{draft.storySummary.theme}</span>}
-          <span className="px-3 py-1 bg-gray-800/50 border border-gray-700 rounded-lg text-sm text-gray-300">预估 {Math.round(draft.storySummary.estimatedDurationSec / 60)} 分钟</span>
+      <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-5 mb-4">
+        <div className="flex flex-wrap gap-2 mb-3">
+          {draft.storySummary.genre && <span className="px-2.5 py-1 bg-purple-900/30 border border-purple-800/40 rounded-lg text-xs text-purple-300">{draft.storySummary.genre}</span>}
+          {draft.storySummary.tone && <span className="px-2.5 py-1 bg-blue-900/30 border border-blue-800/40 rounded-lg text-xs text-blue-300">{draft.storySummary.tone}</span>}
+          {draft.storySummary.theme && <span className="px-2.5 py-1 bg-green-900/30 border border-green-800/40 rounded-lg text-xs text-green-300">{draft.storySummary.theme}</span>}
+          <span className="px-2.5 py-1 bg-gray-800/50 border border-gray-700 rounded-lg text-xs text-gray-300">约 {Math.round(draft.storySummary.estimatedDurationSec / 60)} 分钟</span>
         </div>
 
         {draft.storySummary.characters.length > 0 && (
-          <div className="border-t border-gray-800 pt-5">
-            <h4 className="text-sm font-medium text-gray-400 mb-3">角色 ({draft.storySummary.characters.length})</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="border-t border-gray-800 pt-4">
+            <h4 className="text-xs font-medium text-gray-400 mb-2">角色</h4>
+            <div className="flex flex-wrap gap-2">
               {draft.storySummary.characters.map(char => (
-                <div key={char.id} className="bg-gray-950/50 rounded-xl p-4 border border-gray-800">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-sm">
-                      {char.name[0]}
-                    </div>
-                    <div className="font-medium text-white">{char.name}</div>
+                <div key={char.id} className="flex items-center gap-2 bg-gray-950/50 rounded-lg px-3 py-1.5 border border-gray-800">
+                  <div className="w-5 h-5 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
+                    {char.name[0]}
                   </div>
-                  <p className="text-sm text-gray-400">{char.description}</p>
+                  <span className="text-sm text-white">{char.name}</span>
+                  <span className="text-xs text-gray-500">{char.description.slice(0, 15)}...</span>
                 </div>
               ))}
             </div>
@@ -427,7 +446,7 @@ function DraftView({ draft, expandedShots, onToggleShot, onCopy, onSave }: {
       </div>
 
       {/* Scenes */}
-      <div className="space-y-6">
+      <div className="space-y-3">
         {draft.scenes.map(scene => (
           <SceneCard
             key={scene.id}
@@ -448,31 +467,29 @@ function SceneCard({ scene, expandedShots, onToggleShot, onCopy }: {
   onToggleShot: (id: string) => void;
   onCopy: (text: string) => void;
 }) {
-  const timeIcons: Record<string, string> = { day: '☀️', night: '🌙', dusk: '🌅', unknown: '❓' };
+  const timeLabels: Record<string, string> = { day: '白天', night: '夜晚', dusk: '黄昏', unknown: '未知' };
 
   return (
-    <div className="bg-gray-900/50 border border-gray-800 rounded-2xl overflow-hidden">
-      <div className="px-6 py-5 border-b border-gray-800">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-blue-600/20 border border-blue-600/30 rounded-xl flex items-center justify-center">
-            <span className="text-blue-400 font-bold">{scene.sequence}</span>
-          </div>
-          <div>
-            <div className="flex items-center gap-3">
-              <h3 className="text-lg font-semibold text-white">Scene {scene.sequence}</h3>
-              <span className="text-gray-500">·</span>
-              <span className="text-gray-300">{scene.location}</span>
-              <span className={`px-2 py-0.5 rounded text-xs ${scene.timeOfDay === 'day' ? 'bg-yellow-900/30 text-yellow-400' : scene.timeOfDay === 'night' ? 'bg-indigo-900/30 text-indigo-400' : scene.timeOfDay === 'dusk' ? 'bg-orange-900/30 text-orange-400' : 'bg-gray-800 text-gray-400'}`}>
-                {timeIcons[scene.timeOfDay]} {scene.timeOfDay === 'day' ? '白天' : scene.timeOfDay === 'night' ? '夜晚' : scene.timeOfDay === 'dusk' ? '黄昏' : '未知'}
-              </span>
-            </div>
-            <p className="text-sm text-gray-400 mt-1">{scene.summary}</p>
-            <div className="text-xs text-gray-500 mt-1">{scene.shots.length} 个镜头 · 约{scene.shots.reduce((a, s) => a + (s.durationSec || 0), 0)}秒</div>
-          </div>
+    <div className="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-800/50 flex items-center gap-3">
+        <div className="w-8 h-8 bg-blue-600/20 border border-blue-600/30 rounded-lg flex items-center justify-center flex-shrink-0">
+          <span className="text-blue-400 font-bold text-sm">{scene.sequence}</span>
         </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-white">Scene {scene.sequence}</span>
+            <span className="text-gray-500 text-xs">·</span>
+            <span className="text-sm text-gray-300">{scene.location}</span>
+            <span className={`px-1.5 py-0.5 rounded text-xs ${scene.timeOfDay === 'day' ? 'bg-yellow-900/30 text-yellow-400' : scene.timeOfDay === 'night' ? 'bg-indigo-900/30 text-indigo-400' : scene.timeOfDay === 'dusk' ? 'bg-orange-900/30 text-orange-400' : 'bg-gray-800 text-gray-400'}`}>
+              {timeLabels[scene.timeOfDay]}
+            </span>
+          </div>
+          <p className="text-xs text-gray-500 mt-0.5 truncate">{scene.summary}</p>
+        </div>
+        <span className="text-xs text-gray-500 flex-shrink-0">{scene.shots.length} 镜 · {scene.shots.reduce((a, s) => a + (s.durationSec || 0), 0)}s</span>
       </div>
 
-      <div className="divide-y divide-gray-800/50">
+      <div>
         {scene.shots.map(shot => (
           <ShotCard
             key={shot.id}
@@ -498,53 +515,52 @@ function ShotCard({ shot, expanded, onToggle, onCopy }: {
   const emotionColors: Record<string, string> = { '平静': 'text-gray-400', '紧张': 'text-red-400', '悬疑': 'text-purple-400', '欢快': 'text-green-400', '悲伤': 'text-blue-400', '愤怒': 'text-red-500', '温情': 'text-pink-400', '浪漫': 'text-rose-400', '戏剧性': 'text-yellow-400' };
 
   return (
-    <div className="px-6 py-4 hover:bg-gray-800/30 transition-colors">
-      <div className="flex items-center justify-between cursor-pointer" onClick={onToggle}>
-        <div className="flex items-center gap-4">
-          <div className="w-8 h-8 bg-gray-800 border border-gray-700 rounded-lg flex items-center justify-center">
-            <span className="text-gray-400 text-sm font-medium">{shot.sequence}</span>
-          </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="px-2 py-0.5 bg-gray-800 rounded text-xs text-gray-300">{shot.shotType}</span>
-            <span className="px-2 py-0.5 bg-gray-800 rounded text-xs text-gray-400">{shot.cameraAngle}</span>
-            <span className="px-2 py-0.5 bg-gray-800 rounded text-xs text-gray-400">{shot.cameraMovement}</span>
-            <span className={`text-xs font-medium ${emotionColors[shot.emotion] || 'text-gray-400'}`}>{shot.emotion}</span>
-            <span className="text-xs text-gray-500">{shot.durationSec}秒</span>
-            <span className="px-2 py-0.5 bg-blue-900/30 border border-blue-800/50 rounded text-xs text-blue-400">{purposeLabels[shot.purpose] || shot.purpose}</span>
-          </div>
+    <div className="border-t border-gray-800/30">
+      <div className="px-4 py-2.5 flex items-center gap-3 cursor-pointer hover:bg-gray-800/30 transition-colors" onClick={onToggle}>
+        <span className="text-gray-500 text-xs font-mono w-4">{shot.sequence}</span>
+        <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+          <span className="px-1.5 py-0.5 bg-gray-800 rounded text-xs text-gray-300">{shot.shotType}</span>
+          <span className="px-1.5 py-0.5 bg-gray-800 rounded text-xs text-gray-400">{shot.cameraAngle}</span>
+          <span className={`text-xs font-medium ${emotionColors[shot.emotion] || 'text-gray-400'}`}>{shot.emotion}</span>
+          <span className="px-1.5 py-0.5 bg-blue-900/30 border border-blue-800/40 rounded text-xs text-blue-400">{purposeLabels[shot.purpose] || shot.purpose}</span>
         </div>
-        <svg className={`w-5 h-5 text-gray-500 transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <span className="text-xs text-gray-500">{shot.durationSec}s</span>
+        <svg className={`w-4 h-4 text-gray-500 transition-transform flex-shrink-0 ${expanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </div>
 
       {expanded && (
-        <div className="mt-4 space-y-4">
+        <div className="px-4 pb-4 space-y-3">
           {shot.visualDescription && (
-            <div className="bg-gray-950/50 rounded-xl p-4 border border-gray-800">
-              <div className="text-xs font-medium text-gray-500 mb-2">画面描述</div>
+            <div className="bg-gray-950/50 rounded-lg p-3 border border-gray-800">
+              <div className="text-xs font-medium text-gray-500 mb-1.5">画面描述</div>
               <p className="text-sm text-gray-300 leading-relaxed">{shot.visualDescription}</p>
             </div>
           )}
 
-          <div className="bg-gray-950/50 rounded-xl overflow-hidden border border-gray-800">
-            <div className="flex border-b border-gray-800">
+          <div className="bg-gray-950/50 rounded-lg border border-gray-800 overflow-hidden">
+            <div className="flex">
               {(['kling', 'runway', 'sora'] as const).map(p => (
-                <button key={p} onClick={() => setActiveTab(p)} className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${activeTab === p ? 'bg-gray-800 text-white border-b-2 border-blue-500' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'}`}>
+                <button
+                  key={p}
+                  onClick={() => setActiveTab(p)}
+                  className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${activeTab === p ? 'bg-gray-800 text-white border-b-2 border-blue-500' : 'text-gray-500 hover:text-gray-300'}`}
+                >
                   {p.toUpperCase()}
                 </button>
               ))}
             </div>
-            <div className="p-4">
-              <div className="flex items-center justify-between mb-3">
-                <span className={`text-xs px-2 py-0.5 rounded ${shot.platformPrompts[activeTab]?.status === 'ready' ? 'bg-green-900/30 text-green-400' : shot.platformPrompts[activeTab]?.status === 'stale' ? 'bg-yellow-900/30 text-yellow-400' : 'bg-red-900/30 text-red-400'}`}>
+            <div className="p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className={`text-xs px-1.5 py-0.5 rounded ${shot.platformPrompts[activeTab]?.status === 'ready' ? 'bg-green-900/30 text-green-400' : shot.platformPrompts[activeTab]?.status === 'stale' ? 'bg-yellow-900/30 text-yellow-400' : 'bg-red-900/30 text-red-400'}`}>
                   {shot.platformPrompts[activeTab]?.status === 'ready' ? '就绪' : shot.platformPrompts[activeTab]?.status === 'stale' ? '已过期' : '失败'}
                 </span>
-                <button onClick={() => onCopy(shot.platformPrompts[activeTab]?.text || '')} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-xs font-medium transition-colors">
-                  复制 Prompt
+                <button onClick={() => onCopy(shot.platformPrompts[activeTab]?.text || '')} className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs font-medium transition-colors">
+                  复制
                 </button>
               </div>
-              <p className="text-sm text-gray-300 font-mono leading-relaxed bg-gray-900/50 p-3 rounded-lg border border-gray-800">
+              <p className="text-xs text-gray-300 font-mono leading-relaxed bg-gray-900/50 p-2 rounded border border-gray-800 break-all">
                 {shot.platformPrompts[activeTab]?.text || '—'}
               </p>
             </div>
