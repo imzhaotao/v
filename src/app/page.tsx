@@ -25,7 +25,7 @@ function getErrorMessage(error: unknown): string {
 export default function Home() {
   const [storyText, setStoryText] = useState('');
   const [title, setTitle] = useState('');
-  const [model, setModel] = useState<string>('deepseek');
+  const [model, setModel] = useState<string>('minimax');
   const [draft, setDraft] = useState<StoryDraft | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
