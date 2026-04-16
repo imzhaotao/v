@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
-import type { StoryDraft, StorySummary, Scene, Shot } from '@/types/draft';
+import type { StoryDraft } from '@/types/draft';
 import { exportAsJson, exportAsMarkdown, exportAsCsv, downloadFile } from '@/lib/export';
 
 const AVAILABLE_MODELS = (process.env.NEXT_PUBLIC_AVAILABLE_MODELS || 'deepseek,minimax').split(',').map(m => m.trim());
@@ -17,6 +16,10 @@ interface DraftListItem {
   status: string;
   created_at: string;
   updated_at: string;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '未知错误';
 }
 
 export default function Home() {
@@ -41,17 +44,19 @@ export default function Home() {
 
   async function loadDraftList() {
     setDbError(null);
-    const { data, error } = await supabase
-      .from('drafts')
-      .select('id, title, story_text, status, created_at, updated_at')
-      .order('created_at', { ascending: false })
-      .limit(20);
+    try {
+      const res = await fetch('/api/drafts');
+      const data: { drafts?: DraftListItem[]; error?: string } = await res.json();
 
-    if (error) {
-      setDbError('数据库读取失败：' + error.message);
+      if (!res.ok) {
+        throw new Error(data.error || '数据库读取失败');
+      }
+
+      setDraftList(data.drafts || []);
+    } catch (error: unknown) {
+      setDbError('数据库读取失败：' + getErrorMessage(error));
       return;
     }
-    setDraftList(data || []);
   }
 
   async function handleGenerate() {
@@ -66,7 +71,7 @@ export default function Home() {
     setTotalScenes(0);
 
     try {
-      const res = await fetch('/api/generate', {
+      const res = await fetch('/api/drafts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storyText, language: 'zh', title: title || undefined, model }),
@@ -82,9 +87,6 @@ export default function Home() {
 
       const decoder = new TextDecoder();
       let buffer = '';
-
-      // 保存到数据库
-      let savedId = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -112,16 +114,17 @@ export default function Home() {
               setProgress('done');
               setProgressText('生成完成');
               setDraft(data.draft);
+              loadDraftList();
             } else if (data.error) {
               throw new Error(data.error);
             }
-          } catch (e) {
+          } catch {
             // 忽略解析错误
           }
         }
       }
-    } catch (e: any) {
-      setError(e.message);
+    } catch (error: unknown) {
+      setError(getErrorMessage(error));
       setProgress('error');
     } finally {
       setLoading(false);
@@ -178,35 +181,19 @@ export default function Home() {
                 <button
                   key={d.id}
                   onClick={async () => {
-                    const { data, error } = await supabase
-                      .from('drafts')
-                      .select('*')
-                      .eq('id', d.id)
-                      .single();
-                    if (!error && data) {
-                      const draftData = {
-                        id: data.id,
-                        status: data.status,
-                        source: { language: data.language || 'zh', title: data.title, storyText: data.story_text },
-                        storySummary: data.story_summary || {
-                          title: data.title || '未命名',
-                          genre: '',
-                          tone: '',
-                          theme: '',
-                          estimatedDurationSec: 0,
-                          characters: [],
-                        },
-                        scenes: data.scenes || [],
-                        generationMeta: data.generation_meta || {
-                          model: data.model_used || '',
-                          version: '1.0',
-                          lastGeneratedAt: data.updated_at,
-                          warnings: [],
-                        },
-                      };
-                      setDraft(draftData);
+                    try {
+                      const res = await fetch(`/api/drafts/${d.id}`);
+                      const data: (StoryDraft & { error?: string }) | { error?: string } = await res.json();
+
+                      if (!res.ok) {
+                        throw new Error(data.error || '读取 Draft 失败');
+                      }
+
+                      setDraft(data as StoryDraft);
                       setStoryText('');
                       setTitle('');
+                    } catch (error: unknown) {
+                      setError(getErrorMessage(error));
                     }
                   }}
                   className="w-full text-left bg-gray-900/50 border border-gray-800 rounded-xl p-4 hover:bg-gray-800/50 transition-colors"
@@ -324,18 +311,31 @@ export default function Home() {
             onToggleShot={toggleShot}
             onCopy={copyPrompt}
             onSave={async () => {
-              const { error } = await supabase.from('drafts').insert({
-                title: draft.storySummary.title,
-                story_text: draft.source.storyText,
-                language: draft.source.language,
-                status: 'ready',
-                model_used: model,
-                story_summary: draft.storySummary,
-                scenes: draft.scenes,
-                generation_meta: draft.generationMeta,
-              });
-              if (error) alert('保存失败：' + error.message);
-              else { alert('已保存到数据库'); loadDraftList(); }
+              try {
+                if (!draft.id) {
+                  throw new Error('当前 Draft 没有数据库 ID，请重新生成后再保存');
+                }
+
+                const res = await fetch(`/api/drafts/${draft.id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    storySummary: draft.storySummary,
+                    scenes: draft.scenes,
+                    status: draft.status,
+                  }),
+                });
+                const data: { error?: string } = await res.json();
+
+                if (!res.ok) {
+                  throw new Error(data.error || '保存失败');
+                }
+
+                alert('已保存到数据库');
+                loadDraftList();
+              } catch (error: unknown) {
+                alert('保存失败：' + getErrorMessage(error));
+              }
             }}
           />
         )}

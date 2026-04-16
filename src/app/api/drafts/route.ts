@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from 'ai';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import { createOpenAI } from '@ai-sdk/openai';
-import { createClient } from '@supabase/supabase-js';
 import { generateDraftId } from '@/lib/pipeline';
+import { supabaseServer as supabase } from '@/lib/supabase-server';
+import type { Scene, Shot, StoryDraft, TimeOfDay } from '@/types/draft';
 
 const deepseek = createDeepSeek({
   baseURL: 'https://api.deepseek.com',
@@ -22,11 +23,61 @@ const MODEL_CONFIG = {
 } as const;
 
 type ModelType = keyof typeof MODEL_CONFIG;
+type Language = StoryDraft['source']['language'];
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://cuoadvkafpjyeasyribj.supabase.co',
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_Z3qks5beCk-7SwUTHZ_A9g_ohX4LeUE'
-);
+interface PromptCharacter {
+  name: string;
+  description: string;
+}
+
+interface PromptScene {
+  location: string;
+  timeOfDay?: TimeOfDay;
+  summary: string;
+}
+
+interface AnalysisResult {
+  title: string;
+  genre: string;
+  tone: string;
+  theme: string;
+  estimatedDurationSec: number;
+  characters: PromptCharacter[];
+  scenes: PromptScene[];
+}
+
+type GeneratedShot = Partial<
+  Pick<Shot, 'sequence' | 'purpose' | 'durationSec' | 'shotType' | 'cameraAngle' | 'cameraMovement' | 'visualDescription' | 'emotion'>
+>;
+
+type GeneratedScene = Pick<Scene, 'id' | 'sequence' | 'location' | 'timeOfDay' | 'summary' | 'shots'>;
+
+interface CreateDraftBody {
+  storyText?: string;
+  language?: Language;
+  title?: string;
+  model?: string;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'cause' in error &&
+    error.cause &&
+    typeof error.cause === 'object' &&
+    'code' in error.cause &&
+    (error.cause as { code?: string }).code === 'ENOTFOUND'
+  ) {
+    const hostname =
+      'hostname' in error.cause && typeof (error.cause as { hostname?: string }).hostname === 'string'
+        ? (error.cause as { hostname?: string }).hostname
+        : 'Supabase host';
+    return `无法连接到 Supabase：域名解析失败（${hostname}）。请检查 .env.local 里的 NEXT_PUBLIC_SUPABASE_URL 是否正确，或确认该 Supabase 项目仍然存在。`;
+  }
+
+  return error instanceof Error ? error.message : '生成失败';
+}
 
 const STORY_ANALYSIS_PROMPT = `你是一个专业的电影分镜师。分析以下故事，输出JSON。
 
@@ -72,11 +123,11 @@ const SHOT_EXPANSION_PROMPT = `根据以下场景信息，生成3-5个分镜。
 
 只输出JSON数组，不要其他文字：`;
 
-function buildScenePrompt(scene: any, characters: any[]): string {
-  const charStr = characters.map((c: any) => c.name).join('、') || '主角';
+function buildScenePrompt(scene: PromptScene, characters: PromptCharacter[]): string {
+  const charStr = characters.map(c => c.name).join('、') || '主角';
   return SHOT_EXPANSION_PROMPT
     .replace('{location}', scene.location)
-    .replace('{timeOfDay}', scene.timeOfDay)
+    .replace('{timeOfDay}', scene.timeOfDay || 'unknown')
     .replace('{summary}', scene.summary)
     .replace('{characters}', charStr);
 }
@@ -89,23 +140,28 @@ function parseJson<T>(text: string, fallback: T): T {
   return fallback;
 }
 
-function buildPromptText(shot: any, platform: string): string {
+function buildPromptText(shot: GeneratedShot, platform: string): string {
   const { shotType, cameraAngle, cameraMovement, visualDescription, emotion } = shot;
   const prefix = platform === 'kling' ? 'Cinematic video' : platform === 'runway' ? 'Film still' : 'Cinematic scene';
   return `${prefix}, ${shotType || '中景'}, ${cameraAngle || '平视'}, ${cameraMovement || '固定'} shot, ${visualDescription || ''}, ${emotion || '平静'} mood`.trim();
 }
 
 export async function GET() {
-  const { data, error } = await supabase
-    .from('drafts')
-    .select('id, title, story_text, status, created_at, updated_at')
-    .order('created_at', { ascending: false })
-    .limit(20);
+  try {
+    const { data, error } = await supabase
+      .from('drafts')
+      .select('id, title, story_text, status, created_at, updated_at')
+      .order('created_at', { ascending: false })
+      .limit(20);
 
-  if (error) {
-    return NextResponse.json({ error: '数据库读取失败：' + error.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: '数据库读取失败：' + error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ drafts: data || [] });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: '数据库读取失败：' + getErrorMessage(error) }, { status: 500 });
   }
-  return NextResponse.json({ drafts: data || [] });
 }
 
 export async function POST(request: NextRequest) {
@@ -121,7 +177,7 @@ export async function POST(request: NextRequest) {
       let draftId = '';
 
       try {
-        const body = await request.json();
+        const body: CreateDraftBody = await request.json();
         const { storyText, language = 'zh', title, model = 'deepseek' } = body;
 
         if (!storyText || storyText.trim().length < 20) {
@@ -177,22 +233,22 @@ export async function POST(request: NextRequest) {
           tone: '写实',
           theme: '人生',
           estimatedDurationSec: 120,
-          characters: [],
+          characters: [] as PromptCharacter[],
           scenes: [{ location: '未知', timeOfDay: 'unknown', summary: storyText.slice(0, 200) }],
-        });
+        } satisfies AnalysisResult);
 
         send({ type: 'analysis', data: analysis, status: 'expanding' });
 
         // Step 2: 分镜扩展
         const characters = analysis.characters || [];
-        const scenes: Array<{ id: string; sequence: number; location: string; timeOfDay: string; summary: string; shots: any[] }> =
-          (analysis.scenes || []).map((s: any, i: number) => ({
+        const scenes: GeneratedScene[] =
+          (analysis.scenes || []).map((s, i) => ({
             id: `scene_${i + 1}`,
             sequence: i + 1,
             location: s.location,
             timeOfDay: s.timeOfDay || 'unknown',
             summary: s.summary,
-            shots: [],
+            shots: [] as Shot[],
           }));
 
         for (let i = 0; i < scenes.length; i++) {
@@ -208,22 +264,22 @@ export async function POST(request: NextRequest) {
               temperature: 0.7,
             });
 
-            const shotsData = parseJson<any[]>(shotsText, []);
+            const shotsData = parseJson<GeneratedShot[]>(shotsText, []);
             if (Array.isArray(shotsData)) {
               scene.shots = shotsData.map((shot, j) => ({
                 id: `shot_${i + 1}_${j + 1}`,
                 ...shot,
-                subjects: characters.slice(0, 2).map((_: any, idx: number) => `char_${idx + 1}`),
+                subjects: characters.slice(0, 2).map((_, idx) => `char_${idx + 1}`),
                 platformPrompts: {
                   kling: { text: buildPromptText(shot, 'kling'), status: 'ready' },
                   runway: { text: buildPromptText(shot, 'runway'), status: 'ready' },
                   sora: { text: buildPromptText(shot, 'sora'), status: 'ready' },
                 },
                 meta: { aiGenerated: true, userEditedFields: [] },
-              }));
+              })) as Shot[];
             }
-          } catch (e: any) {
-            console.error(`Scene ${i + 1} expansion failed:`, e);
+          } catch (error: unknown) {
+            console.error(`Scene ${i + 1} expansion failed:`, error);
           }
         }
 
@@ -233,7 +289,7 @@ export async function POST(request: NextRequest) {
           tone: analysis.tone,
           theme: analysis.theme,
           estimatedDurationSec: analysis.estimatedDurationSec || 120,
-          characters: characters.map((c: any, i: number) => ({ id: `char_${i + 1}`, ...c })),
+          characters: characters.map((c, i) => ({ id: `char_${i + 1}`, ...c })),
         };
 
         // 更新数据库
@@ -265,12 +321,12 @@ export async function POST(request: NextRequest) {
 
         send({ type: 'done', draft });
 
-      } catch (e: any) {
-        console.error('Stream error:', e);
+      } catch (error: unknown) {
+        console.error('Stream error:', error);
         if (draftId) {
           await supabase.from('drafts').update({ status: 'failed' }).eq('id', draftId);
         }
-        send({ error: e.message || '生成失败' });
+        send({ error: getErrorMessage(error) });
       } finally {
         controller.close();
       }
