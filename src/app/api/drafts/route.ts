@@ -265,6 +265,7 @@ export async function POST(request: NextRequest) {
         } satisfies AnalysisResult);
 
         send({ type: 'analysis', data: analysis, status: 'expanding' });
+        send({ type: 'debug', message: `analysis parsed: title=${analysis.title}, characters=${analysis.characters?.length}, scenes=${analysis.scenes?.length}` });
 
         // Step 2: 分镜扩展
         const characters = (analysis.characters && analysis.characters.length > 0)
@@ -300,9 +301,7 @@ export async function POST(request: NextRequest) {
             // 预处理：去掉 markdown 代码块标记
             const cleanedText = shotsText.replace(/```json\n?/gi, '').replace(/```\n?/gi, '').trim();
             const shotsData = parseJson<GeneratedShot[]>(cleanedText, []);
-            if (shotsData.length === 0) {
-              console.error('[shot parse fail] raw:', shotsText.slice(0, 200));
-            }
+            send({ type: 'debug', message: `[scene${i+1}] raw length=${shotsText.length}, cleaned length=${cleanedText.length}, parsed shots=${shotsData.length}, first 100 chars: ${cleanedText.slice(0, 100)}` });
             if (Array.isArray(shotsData)) {
               scene.shots = shotsData.map((shot, j) => ({
                 id: `shot_${i + 1}_${j + 1}`,
