@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import type { StoryDraft } from '@/types/draft';
+import type { StoryDraft, Scene, Shot } from '@/types/draft';
 import { exportAsJson, exportAsMarkdown, exportAsCsv, downloadFile } from '@/lib/export';
 
 const AVAILABLE_MODELS = (process.env.NEXT_PUBLIC_AVAILABLE_MODELS || 'deepseek,minimax').split(',').map(m => m.trim());
