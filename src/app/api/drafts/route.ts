@@ -138,24 +138,25 @@ function parseJson<T>(text: string, fallback: T): T {
     // Try direct parse first
     try { return JSON.parse(text); } catch {}
 
-    // Strip thinking tags (MiniMax model output)
-    const cleaned = text.replace(/<[^>]*>/g, '').trim();
-    try { return JSON.parse(cleaned); } catch {}
+    // Strip content between <think> and </think> (MiniMax thinking blocks)
+    const withoutThinking = text.replace(/<think>[\s\S]*?\/>/g, '');
+    const stripped = withoutThinking.trim();
+    try { return JSON.parse(stripped); } catch {}
 
     // Try to find JSON array in text (for shots)
-    const arrStart = cleaned.indexOf('[');
-    const arrEnd = cleaned.lastIndexOf(']');
+    const arrStart = stripped.indexOf('[');
+    const arrEnd = stripped.lastIndexOf(']');
     if (arrStart >= 0 && arrEnd > arrStart) {
-      const arrText = cleaned.slice(arrStart, arrEnd + 1);
+      const arrText = stripped.slice(arrStart, arrEnd + 1);
       const parsed = JSON.parse(arrText) as unknown;
       if (Array.isArray(parsed)) return parsed as T;
     }
 
     // Try to find JSON object in text (for analysis)
-    const objStart = cleaned.indexOf('{');
-    const objEnd = cleaned.lastIndexOf('}');
+    const objStart = stripped.indexOf('{');
+    const objEnd = stripped.lastIndexOf('}');
     if (objStart >= 0 && objEnd > objStart) {
-      const objText = cleaned.slice(objStart, objEnd + 1);
+      const objText = stripped.slice(objStart, objEnd + 1);
       const parsed = JSON.parse(objText);
       // Ensure characters not empty
       if (Array.isArray(parsed?.characters) && parsed.characters.length === 0) {
@@ -303,9 +304,9 @@ export async function POST(request: NextRequest) {
             });
 
             // 预处理：去掉 markdown 代码块标记
-            const cleanedText = shotsText.replace(/```json\n?/gi, '').replace(/```\n?/gi, '').trim();
+            const cleanedText = shotsText.replace(/```(?:json)?\n?/gi, '').replace(/```\n?/gi, '').trim();
             const shotsData = parseJson<GeneratedShot[]>(cleanedText, []);
-            send({ type: 'debug', message: `[scene${i+1}] raw length=${shotsText.length}, cleaned length=${cleanedText.length}, parsed shots=${shotsData.length}, first 100 chars: ${cleanedText.slice(0, 100)}` });
+            send({ type: 'debug', message: `[scene${i+1}] raw length=${shotsText.length}, cleaned length=${cleanedText.length}, parsed shots=${shotsData.length}, first 100 chars: ${cleanedText.slice(0, 200)}` });
             if (Array.isArray(shotsData)) {
               scene.shots = shotsData.map((shot, j) => ({
                 id: `shot_${i + 1}_${j + 1}`,
