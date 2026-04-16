@@ -138,20 +138,24 @@ function parseJson<T>(text: string, fallback: T): T {
     // Try direct parse first
     try { return JSON.parse(text); } catch {}
 
+    // Strip thinking tags (MiniMax model output)
+    const cleaned = text.replace(/<[^>]*>/g, '').trim();
+    try { return JSON.parse(cleaned); } catch {}
+
     // Try to find JSON array in text (for shots)
-    const arrStart = text.indexOf('[');
-    const arrEnd = text.lastIndexOf(']');
+    const arrStart = cleaned.indexOf('[');
+    const arrEnd = cleaned.lastIndexOf(']');
     if (arrStart >= 0 && arrEnd > arrStart) {
-      const arrText = text.slice(arrStart, arrEnd + 1);
+      const arrText = cleaned.slice(arrStart, arrEnd + 1);
       const parsed = JSON.parse(arrText) as unknown;
       if (Array.isArray(parsed)) return parsed as T;
     }
 
     // Try to find JSON object in text (for analysis)
-    const objStart = text.indexOf('{');
-    const objEnd = text.lastIndexOf('}');
+    const objStart = cleaned.indexOf('{');
+    const objEnd = cleaned.lastIndexOf('}');
     if (objStart >= 0 && objEnd > objStart) {
-      const objText = text.slice(objStart, objEnd + 1);
+      const objText = cleaned.slice(objStart, objEnd + 1);
       const parsed = JSON.parse(objText);
       // Ensure characters not empty
       if (Array.isArray(parsed?.characters) && parsed.characters.length === 0) {
