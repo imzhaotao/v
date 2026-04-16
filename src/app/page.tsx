@@ -13,6 +13,7 @@ interface DraftListItem {
   id: string;
   title: string | null;
   story_text: string;
+  storyText?: string;
   status: string;
   created_at: string;
   updated_at: string;
@@ -220,9 +221,10 @@ export default function Home() {
                     const res = await fetch(`/api/drafts/${d.id}`);
                     const data: (StoryDraft & { error?: string }) | { error?: string } = await res.json();
                     if (!res.ok) throw new Error((data as { error?: string }).error || '读取失败');
-                    setDraft(data as StoryDraft);
-                    setStoryText('');
-                    setTitle('');
+                    const loadedDraft = data as StoryDraft;
+                    setDraft(loadedDraft);
+                    setStoryText(loadedDraft.source?.storyText || '');
+                    setTitle(loadedDraft.source?.title || '');
                     setHistoryOpen(false);
                   } catch (e: unknown) {
                     alert('读取失败：' + getErrorMessage(e));
