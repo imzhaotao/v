@@ -135,10 +135,17 @@ function buildScenePrompt(scene: PromptScene, characters: PromptCharacter[]): st
 
 function parseJson<T>(text: string, fallback: T): T {
   try {
-    const match = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
-    if (match) return JSON.parse(match[1]);
-  } catch {}
-  return fallback;
+    // Try to find a complete JSON object or array
+    const cleaned = text.replace(/^[^\{]*\{/, '{').replace(/\}[^\}]*$/, '}');
+    const parsed = JSON.parse(cleaned);
+    // 确保 characters 不为空
+    if (Array.isArray(parsed?.characters) && parsed.characters.length === 0) {
+      parsed.characters = [{ name: '主角', description: '故事中的主要人物' }];
+    }
+    return parsed;
+  } catch {
+    return fallback;
+  }
 }
 
 function buildPromptText(shot: GeneratedShot, platform: string): string {
@@ -229,19 +236,19 @@ export async function POST(request: NextRequest) {
         });
 
         const analysis = parseJson(analysisText, {
-          title: title || '未命名',
+          title: title || '故事',
           genre: '剧情',
           tone: '写实',
           theme: '人生',
           estimatedDurationSec: 120,
-          characters: [] as PromptCharacter[],
+          characters: [{ name: '主角', description: '故事中的主要人物' }],
           scenes: [{ location: '未知', timeOfDay: 'unknown', summary: storyText.slice(0, 200) }],
         } satisfies AnalysisResult);
 
         send({ type: 'analysis', data: analysis, status: 'expanding' });
 
         // Step 2: 分镜扩展
-        const characters = (analysis.characters || []).length > 0
+        const characters = (analysis.characters && analysis.characters.length > 0)
           ? analysis.characters
           : [{ name: '主角', description: '故事中的主要人物' }];
         const scenes: GeneratedScene[] =
