@@ -298,8 +298,11 @@ export async function POST(request: NextRequest) {
             });
 
             // 预处理：去掉 markdown 代码块标记
-            const cleanedText = shotsText.replace(/```(?:json)?\n?/gi, '').trim();
+            const cleanedText = shotsText.replace(/```json\n?/gi, '').replace(/```\n?/gi, '').trim();
             const shotsData = parseJson<GeneratedShot[]>(cleanedText, []);
+            if (shotsData.length === 0) {
+              console.error('[shot parse fail] raw:', shotsText.slice(0, 200));
+            }
             if (Array.isArray(shotsData)) {
               scene.shots = shotsData.map((shot, j) => ({
                 id: `shot_${i + 1}_${j + 1}`,
