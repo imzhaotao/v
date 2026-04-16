@@ -195,5 +195,5 @@ function renderPlatformPromptsSync(
 
 // 生成唯一 ID
 export function generateDraftId(): string {
-  return `draft_${Date.now()}_${uuidv4().slice(0, 8)}`;
+  return uuidv4();
 }
