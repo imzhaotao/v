@@ -154,6 +154,8 @@ export default function Home() {
                   icon: '/favicon.ico',
                 });
               }
+            } else if (data.type === 'debug') {
+              console.log('[DEBUG]', data.message);
             } else if (data.error) {
               throw new Error(data.error);
             }
