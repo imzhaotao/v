@@ -251,6 +251,10 @@ export async function POST(request: NextRequest) {
         const characters = (analysis.characters && analysis.characters.length > 0)
           ? analysis.characters
           : [{ name: '主角', description: '故事中的主要人物' }];
+
+        // 立即发送角色数据，让前端增量渲染
+        send({ type: 'characters', characters, status: 'expanding' });
+
         const scenes: GeneratedScene[] =
           (analysis.scenes || []).map((s, i) => ({
             id: `scene_${i + 1}`,
@@ -264,6 +268,7 @@ export async function POST(request: NextRequest) {
         for (let i = 0; i < scenes.length; i++) {
           const scene = scenes[i];
           send({ type: 'scene_progress', sceneIndex: i, totalScenes: scenes.length, status: 'expanding' });
+          send({ type: 'scene_partial', scene, sceneIndex: i, totalScenes: scenes.length, status: 'expanding' });
 
           const scenePrompt = buildScenePrompt(scene, characters);
           try {

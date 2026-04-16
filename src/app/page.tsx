@@ -64,7 +64,14 @@ export default function Home() {
 
     setLoading(true);
     setError(null);
-    setDraft(null);
+    setDraft({
+      id: '',
+      status: 'generating',
+      source: { language: 'zh', title: title || undefined, storyText },
+      storySummary: { title: title || '分析中...', genre: '', tone: '', theme: '', estimatedDurationSec: 0, characters: [] },
+      scenes: [],
+      generationMeta: { model, version: '1.0', lastGeneratedAt: '', warnings: [] },
+    });
     setProgress('analyzing');
     setProgressText('正在分析故事结构...');
     setSceneIndex(0);
@@ -110,10 +117,42 @@ export default function Home() {
             } else if (data.type === 'scene_progress') {
               setSceneIndex(data.sceneIndex + 1);
               setProgressText(`生成场景 ${data.sceneIndex + 1}/${data.totalScenes}...`);
+            } else if (data.type === 'characters') {
+              // 增量更新角色
+              setDraft(prev => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  storySummary: {
+                    ...prev.storySummary,
+                    characters: data.characters,
+                  },
+                };
+              });
+            } else if (data.type === 'scene_partial') {
+              // 增量更新场景
+              setDraft(prev => {
+                if (!prev) return prev;
+                const existing = prev.scenes.findIndex(s => s.id === `scene_${data.sceneIndex + 1}`);
+                const newScene = {
+                  id: `scene_${data.sceneIndex + 1}`,
+                  sequence: data.sceneIndex + 1,
+                  location: data.scene.location,
+                  timeOfDay: data.scene.timeOfDay,
+                  summary: data.scene.summary,
+                  shots: [],
+                };
+                if (existing >= 0) {
+                  const updated = [...prev.scenes];
+                  updated[existing] = newScene;
+                  return { ...prev, scenes: updated };
+                }
+                return { ...prev, scenes: [...prev.scenes, newScene] };
+              });
             } else if (data.type === 'done') {
               setProgress('done');
               setProgressText('生成完成');
-              setDraft(data.draft);
+              if (data.draft) setDraft(data.draft);
               autoSaveDraft(data.draft);
               loadDraftList();
               // 浏览器通知
